@@ -1,6 +1,5 @@
 import os
 import numpy as np
-# import aicspylibczi as acp
 import xml.etree.ElementTree as ET
 import czifile
 from image_analysis.analysis import GUV, HexagonalMesh
