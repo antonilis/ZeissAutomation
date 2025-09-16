@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from skimage.filters import threshold_multiotsu
 import cv2
 from abc import ABC, abstractmethod
+from collections import defaultdict
 
 
 class ImageAnalysisTemplate(ABC):
@@ -19,7 +20,6 @@ class ImageAnalysisTemplate(ABC):
 
 
 class HexagonalMesh(ImageAnalysisTemplate):
-
 
     def get_mesh_nodes(self):
         # Blur
@@ -39,7 +39,6 @@ class HexagonalMesh(ImageAnalysisTemplate):
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(thresholded)
 
         return centroids
-
 
     def get_delaunay_edges(self, points):
 
@@ -108,7 +107,7 @@ class HexagonalMesh(ImageAnalysisTemplate):
 
         # 2. Pogrupuj krawędzie na podstawie odległości
         clustered_edges, cluster_centers, cluster_labels = self.filter_edges_by_distance(points, edges, n_clusters,
-                                                                                    remove_outliers)
+                                                                                         remove_outliers)
 
         edge_midpoints = []
         for edges_group in clustered_edges:
@@ -126,6 +125,7 @@ class HexagonalMesh(ImageAnalysisTemplate):
             return edge_midpoints[0], polygon_centroids
         else:
             return np.array([]), polygon_centroids
+
     def get_measurement_points(self):
 
         nodes = self.get_mesh_nodes()
@@ -138,6 +138,86 @@ class HexagonalMesh(ImageAnalysisTemplate):
 
 
 class GUV(ImageAnalysisTemplate):
+    @staticmethod
+    def _classify_contours_by_area(contours, hierarchy, top_n=None):
+        """
+        Finds external contours and their internal contours, sorted by area in descending order.
+        Args:
+            contours (list): List of contours.
+            hierarchy (numpy.ndarray): Contour hierarchy information.
+            top_n (int, optional): Number of top external contours to return. If None, returns all.
+        Returns:
+            list: Tuples of (external_contour, internal_contours_list) sorted by external contour area.
+        """
+        # Map parent indices to their child contours
+        parent_children_map = defaultdict(list)
+        external_contours = []
+        # Identify external contours and collect their largest internal
+        for i in range(len(contours)):
+            if hierarchy[0][i][3] == -1:  # External contour has no parent
+                ext_contour = contours[i]
+                area = cv2.contourArea(ext_contour)
+                internal_contours = parent_children_map.get(i, [])
+                # Find the largest internal contour if any
+                largest_internal = None
+                if internal_contours:
+                    largest_internal = max(internal_contours, key=lambda c: cv2.contourArea(c))
+                external_contours.append((area, ext_contour, largest_internal))
+        # Sort by external contour area (descending)
+        external_contours.sort(reverse=True, key=lambda x: x[0])
+        # Apply top_n limit
+        if top_n is not None:
+            external_contours = external_contours[:top_n]
+        # Return tuples (external_contour, largest_internal_contour)
+        return [(ext) for (_, ext, largest_internal) in external_contours]
+
+    @staticmethod
+    def get_contour_centers_and_radii(contours):
+        """
+        Returns a dictionary mapping contour indices to dicts {center: (cx, cy), radius: r}
+        """
+        results = {}
+        for idx, cnt in enumerate(contours):
+            M = cv2.moments(cnt)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                # else:
+                #     cx, cy = None, None  # brak centrum dla konturów o zerowej powierzchni
+                (x, y), radius = cv2.minEnclosingCircle(cnt)
+
+            results[idx] = {"center": (cx, cy), "radius": int(radius)}
+        return results
+
+    def filter_by_size(self, GUVs_dict, min_size_um=3 * 10 ** (-6), max_size_um=15 * 10 ** (-6)):
+
+        scale = np.mean([
+            self.metadata['scaling_um_per_pixel']['X'],
+            self.metadata['scaling_um_per_pixel']['Y']
+        ])
+
+        centers = []
+        for v in GUVs_dict.values():
+            radius_um = v['radius'] * scale
+            if min_size_um <= radius_um <= max_size_um:
+                centers.append([v['center'][0], v['center'][1]])  # lista, nie tuple
+
+        return {'centers': np.array(centers, dtype=float).reshape(-1, 2)}
+
+
     def get_measurement_points(self):
-        # Implementacja specyficzna dla GUV
-        return None
+
+        blurred = cv2.GaussianBlur(self.image, (5, 5), 0)
+
+        otsu_threshold, thresholded = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        found_contours, hierarchy = cv2.findContours(np.array(thresholded, dtype=np.uint8), cv2.RETR_CCOMP,
+                                                     cv2.CHAIN_APPROX_SIMPLE)
+
+        classified_external = self._classify_contours_by_area(found_contours, hierarchy)
+
+        center_radius_dict = self.get_contour_centers_and_radii(classified_external)
+
+        measurement_point = self.filter_by_size(center_radius_dict)
+
+        return measurement_point
