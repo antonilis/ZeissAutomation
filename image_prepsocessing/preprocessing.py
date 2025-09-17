@@ -67,8 +67,10 @@ class ZeissImageProcessor:
         return channels
 
     def _extract_positions(self, root):
-        """Extract stage positions from Scenes/Positions/Position nodes in CZI metadata."""
+        """Extract stage positions from CZI metadata (supports both Scene/Position and ParameterCollection)."""
         positions = []
+
+        # --- 1. Standardowe pozycje w Scenes/Positions ---
         for pos in root.findall(".//{*}Scenes/{*}Scene/{*}Positions/{*}Position"):
             x = pos.attrib.get("X")
             y = pos.attrib.get("Y")
@@ -78,6 +80,24 @@ class ZeissImageProcessor:
                 "y": float(y) if y else None,
                 "z": float(z) if z else None,
             })
+
+        # --- 2. Parametry osi w ParameterCollection ---
+        axis_map = {"MTBStageAxisX": "x", "MTBStageAxisY": "y", "MTBFocus": "z"}
+        axis_values = {}
+
+        for pc in root.findall(".//{*}ParameterCollection"):
+            axis_id = pc.attrib.get("Id")
+            if axis_id in axis_map:
+                pos_elem = pc.find("{*}Position")
+                if pos_elem is not None and pos_elem.text:
+                    try:
+                        axis_values[axis_map[axis_id]] = float(pos_elem.text)
+                    except ValueError:
+                        axis_values[axis_map[axis_id]] = None
+
+        if axis_values:
+            positions.append(axis_values)
+
         return positions
 
     def get_image_to_analyze(self, image, axes, analysis_channel):
@@ -137,8 +157,8 @@ class ZeissImageProcessor:
         height, width = self.image_to_analyze.shape
 
         # Scaling (µm/pixel)
-        sx = self.metadata["scaling_um_per_pixel"].get("X", 1.0)
-        sy = self.metadata["scaling_um_per_pixel"].get("Y", 1.0)
+        sx = self.metadata["scaling_um_per_pixel"].get("X", 1.0) * 10**(6)
+        sy = self.metadata["scaling_um_per_pixel"].get("Y", 1.0) * 10**(6)
 
         # Stage position (center of image)
         stage_pos = (
@@ -200,11 +220,13 @@ if __name__ == '__main__':
 
     main_path_GUVs = 'GUVs_Laura'
     main_path_hexagonal = '01092025-onchip-3rd'
+    main_path = '20250915_test_Antoni'
 
+    main_directions =  choose_chi_files(main_path)
     GUVs_directions = choose_chi_files(main_path_GUVs)
     hexagonal_directions = choose_chi_files(main_path_hexagonal)
 
-
+    obj = ZeissImageProcessor(main_directions[0], chosen_analysis='GUVs')
     obj_GUVs = ZeissImageProcessor(GUVs_directions[0], chosen_analysis='GUVs')
     obj_hex = ZeissImageProcessor(hexagonal_directions[0], chosen_analysis='hexagonal')
 

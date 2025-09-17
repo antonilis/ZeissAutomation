@@ -1,0 +1,41 @@
+from zeissApiProcessor.czmac import ZeissAPIProcessor
+
+
+def log(msg):
+    path = "D:\\zeiss\\Desktop\\zen_log.txt"
+    with open(path, "a") as f:
+        f.write(msg + "\n")
+
+
+#docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
+#expfiles = Directory.GetFiles(Path.Combine(docfolder, 'Experiment Setups'), '*.czexp')
+
+
+# #maybe I can do it just by the name? Not clear for me to be honest and then
+
+
+
+experiments = {'FCS': 'xxx_path_to_experiment', 'Image': 'xxx_path_to_second_experiment'}
+measuring_points_path = 'path_to_measure'
+
+
+
+processor = ZeissAPIProcessor(experiments, measuring_points_path)
+
+current_position = processor.get_stage_focus_position()
+log(str(current_position))
+
+measuring_points = processor.measuring_points #check at this moment if those points make any sense
+log(str(measuring_points))
+
+processor.load_experiment('Image')
+processor.execute_current_experiment()
+processor.save_experiment_result('XXX')
+
+
+
+processor.load_experiment('FCS')
+processor.execute_current_experiment()
+processor.save_experiment_result('XXX')
+
+# if this works, just write a loop that will go through all of the points and measure
