@@ -1,4 +1,56 @@
-from zeissApiProcessor.czmac import ZeissAPIProcessor
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+
+import json
+import time
+
+class ZeissApiProcessor:
+
+    def __init__(self, experiments, measuring_points_path):
+
+        self.experiments = experiments #dictionairy with the type of the experiments and path to them
+        self.measuring_points = self.read_measuring_points(measuring_points_path)
+        self.stage_position = self.get_stage_focus_position()
+
+    @staticmethod
+    def read_measuring_points(path):
+        with open(path, "r") as file:
+
+            data = json.load(file)
+
+        return data
+
+    def get_stage_focus_position(self):
+        x = Zen.Devices.Stage.ActualPositionX
+        y = Zen.Devices.Stage.ActualPositionY
+        z = Zen.Devices.Focus.ActualPosition
+
+        return [x, y, z]
+
+    @staticmethod
+    def move(points_to_move):
+        Zen.Devices.Stage.MoveTo(points_to_move[0], points_to_move[1])
+        Zen.Devices.Focus.MoveTo(points_to_move[2])
+
+
+    def load_experiment(self, chosen_experiment):
+
+        experiment_path = self.experiments[chosen_experiment]
+        exp = Zen.Acquisition.Experiments.GetByName(experiment_path)
+        exp.SetActive()
+	    time.sleep(10)
+
+    def execute_current_experiment(self):
+        Zen.Acquisition.Execute(Zen.Acquisition.Experiments.ActiveExperiment)
+
+
+    def save_experiment_result(self, path):
+        Zen.Application.Save(path)
+
 
 
 def log(msg):
@@ -7,20 +59,16 @@ def log(msg):
         f.write(msg + "\n")
 
 
-#docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
-#expfiles = Directory.GetFiles(Path.Combine(docfolder, 'Experiment Setups'), '*.czexp')
 
 
-# #maybe I can do it just by the name? Not clear for me to be honest and then
+experiments = {"FCS": "automation_FCS.czexp", "Image": "automation_imaging.czexp"}
+
+measuring_points_path = "D:\\zeiss\\Desktop\\automation\\data_points.json"
+
+results_path = "D:\\zeiss\\Desktop\\automation\\results"
 
 
-
-experiments = {'FCS': 'xxx_path_to_experiment', 'Image': 'xxx_path_to_second_experiment'}
-measuring_points_path = 'path_to_measure'
-
-
-
-processor = ZeissAPIProcessor(experiments, measuring_points_path)
+processor = ZeissApiProcessor(experiments, measuring_points_path)
 
 current_position = processor.get_stage_focus_position()
 log(str(current_position))
@@ -30,12 +78,19 @@ log(str(measuring_points))
 
 processor.load_experiment('Image')
 processor.execute_current_experiment()
-processor.save_experiment_result('XXX')
+processor.save_experiment_result(results_path + "img.czi")
 
 
 
-processor.load_experiment('FCS')
-processor.execute_current_experiment()
-processor.save_experiment_result('XXX')
+#processor.load_experiment('FCS')
+#processor.execute_current_experiment()
+#processor.save_experiment_result('XXX')
 
 # if this works, just write a loop that will go through all of the points and measure
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>24</Row>
+  <Column>45</Column>
+</Script>
