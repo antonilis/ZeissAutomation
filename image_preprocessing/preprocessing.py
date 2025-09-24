@@ -157,8 +157,8 @@ class ZeissImageProcessor:
         height, width = self.image_to_analyze.shape
 
         # Scaling (µm/pixel)
-        sx = self.metadata["scaling_um_per_pixel"].get("X", 1.0) * 10**(6)
-        sy = self.metadata["scaling_um_per_pixel"].get("Y", 1.0) * 10**(6)
+        sx = self.metadata["scaling_um_per_pixel"].get("X") * 10**(6)
+        sy = self.metadata["scaling_um_per_pixel"].get("Y") * 10**(6)
 
         # Stage position (center of image)
         stage_pos = (
@@ -171,8 +171,8 @@ class ZeissImageProcessor:
         def transform(points: np.ndarray) -> np.ndarray:
             """Transform (N,2) array of pixel points into (N,3) array in µm."""
             # Rozdziel na i, j
-            i = points[:, 1]  # y-pixels (col index)
-            j = points[:, 0]  # x-pixels (row index)
+            i = points[:, 0]  # x-pixels (col index)
+            j = points[:, 1]  # y-pixels (row index)
 
             x_um = X_stage + (i - width / 2) * sx
             y_um = Y_stage + (j - height / 2) * sy
@@ -218,17 +218,17 @@ if __name__ == '__main__':
 
 
 
-    main_path_GUVs = 'GUVs_Laura'
-    main_path_hexagonal = '01092025-onchip-3rd'
-    main_path = '20250915_test_Antoni'
+    main_path_GUVs = './czi_files/GUVs_Laura'
+    main_path_hexagonal = './czi_files/01092025-onchip-3rd'
+    main_path = './czi_files/old_results'
 
-    main_directions =  choose_chi_files(main_path)
+    main_directions = choose_chi_files(main_path)
     GUVs_directions = choose_chi_files(main_path_GUVs)
     hexagonal_directions = choose_chi_files(main_path_hexagonal)
 
-    obj = ZeissImageProcessor(main_directions[0], chosen_analysis='GUVs')
+
     obj_GUVs = ZeissImageProcessor(GUVs_directions[0], chosen_analysis='GUVs')
     obj_hex = ZeissImageProcessor(hexagonal_directions[0], chosen_analysis='hexagonal')
-
+    obj = ZeissImageProcessor(main_directions[0], analysis_channel=0, chosen_analysis='GUVs')
 
     #obj_GUVs.save_measurement_points('measurement_points.json')

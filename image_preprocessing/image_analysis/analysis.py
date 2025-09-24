@@ -207,9 +207,10 @@ class GUV(ImageAnalysisTemplate):
 
     def get_measurement_points(self):
 
-        blurred = cv2.GaussianBlur(self.image, (5, 5), 0)
+        blurred = cv2.medianBlur(self.image, 5)
 
         otsu_threshold, thresholded = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
 
         found_contours, hierarchy = cv2.findContours(np.array(thresholded, dtype=np.uint8), cv2.RETR_CCOMP,
                                                      cv2.CHAIN_APPROX_SIMPLE)

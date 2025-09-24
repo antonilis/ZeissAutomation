@@ -7,6 +7,7 @@
 
 import json
 import time
+from execute_python import run_python_script                                  
 
 class ZeissApiProcessor:
 
@@ -50,7 +51,11 @@ class ZeissApiProcessor:
 
     def save_experiment_result(self, path):
         Zen.Application.Save(path)
+        time.sleep(10)                    
 
+    def save_experiment_result(self, path):
+            image = Zen.Application.Documents.ActiveDocument
+            image.Save(path)
 
 
 def log(msg):
@@ -77,8 +82,19 @@ measuring_points = processor.measuring_points #check at this moment if those poi
 log(str(measuring_points))
 
 processor.load_experiment('Image')
+
+
+#processor.save_experiment_result(results_path + "\\movement_picture.czi") 
 processor.execute_current_experiment()
 processor.save_experiment_result(results_path + "img.czi")
+#certain_points = measuring_points['centers'] 
+
+
+#for p in certain_points:
+    
+    #log(str(p))
+    #processor.move(p) 
+    #processor.execute_current_experiment()
 
 
 
