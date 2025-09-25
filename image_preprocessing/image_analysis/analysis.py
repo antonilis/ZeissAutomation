@@ -199,13 +199,6 @@ class GUV(ImageAnalysisTemplate):
                 (x, y), radius = cv2.minEnclosingCircle(cnt)
                 cnt_area = cv2.contourArea(cnt)
                 circle_area = np.pi * (radius ** 2)
-                perimeter = cv2.arcLength(cnt, True)
-
-                # circularity
-                if perimeter > 0:
-                    circularity = 4 * np.pi * (cnt_area / (perimeter * perimeter))
-                else:
-                    circularity = 0
 
                 # area ratio
                 fit_ratio = cnt_area / circle_area if circle_area > 0 else 0
