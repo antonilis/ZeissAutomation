@@ -127,12 +127,24 @@ class HexagonalMesh(ImageAnalysisTemplate):
             return np.array([]), polygon_centroids
 
     def get_measurement_points(self):
-
         nodes = self.get_mesh_nodes()
-
         edge_midpoints, polygon_centroids = self.find_midpoints_and_centroids(nodes)
 
-        measurement_points = {'nodes': nodes, 'edge midpoints': edge_midpoints, 'polygon centers': polygon_centroids}
+        measurement_points = []
+
+        # lista par (zbiór_punktów, typ)
+        groups = [
+            (nodes, "node"),
+            (edge_midpoints, "edge midpoint"),
+            (polygon_centroids, "polygon centroid"),
+        ]
+
+        for group, point_type in groups:
+            for pos in group:
+                measurement_points.append({
+                    "position": pos,
+                    "type": point_type
+                })
 
         return measurement_points
 
@@ -172,9 +184,10 @@ class GUV(ImageAnalysisTemplate):
         return [(ext) for (_, ext, largest_internal) in external_contours]
 
     @staticmethod
-    def get_contour_centers_and_radii(contours):
+    def get_contour_centers_and_radii(contours, min_fit_ratio=0.2):
         """
         Returns a dictionary mapping contour indices to dicts {center: (cx, cy), radius: r}
+        Only keeps contours that are reasonably circular.
         """
         results = {}
         for idx, cnt in enumerate(contours):
@@ -182,32 +195,47 @@ class GUV(ImageAnalysisTemplate):
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
-                # else:
-                #     cx, cy = None, None  # brak centrum dla konturów o zerowej powierzchni
-                (x, y), radius = cv2.minEnclosingCircle(cnt)
 
-            results[idx] = {"center": (cx, cy), "radius": int(radius)}
+                (x, y), radius = cv2.minEnclosingCircle(cnt)
+                cnt_area = cv2.contourArea(cnt)
+                circle_area = np.pi * (radius ** 2)
+                perimeter = cv2.arcLength(cnt, True)
+
+                # circularity
+                if perimeter > 0:
+                    circularity = 4 * np.pi * (cnt_area / (perimeter * perimeter))
+                else:
+                    circularity = 0
+
+                # area ratio
+                fit_ratio = cnt_area / circle_area if circle_area > 0 else 0
+
+                # filtr na okrągłość
+                if fit_ratio >= min_fit_ratio:
+                    results[idx] = {"center": (cx, cy), "radius": int(radius)}
+
         return results
 
-    def filter_by_size(self, GUVs_dict, min_size_um=3 * 10 ** (-6), max_size_um=15 * 10 ** (-6)):
-
+    def filter_by_size(self, GUVs_dict, min_size_um=5, max_size_um=100):
         scale = np.mean([
             self.metadata['scaling_um_per_pixel']['X'],
             self.metadata['scaling_um_per_pixel']['Y']
         ])
 
-        centers = []
+        filtered = []
         for v in GUVs_dict.values():
-            radius_um = v['radius'] * scale
+            radius_um = v['radius'] * scale * 10**(6)
             if min_size_um <= radius_um <= max_size_um:
-                centers.append([v['center'][0], v['center'][1]])  # lista, nie tuple
+                filtered.append({
+                    'position': [v['center'][0], v['center'][1]],
+                    'radius': radius_um
+                })
 
-        return {'centers': np.array(centers, dtype=float).reshape(-1, 2)}
-
+        return filtered
 
     def get_measurement_points(self):
 
-        blurred = cv2.medianBlur(self.image, 5)
+        blurred = cv2.GaussianBlur(self.image, (5, 5), 0)
 
         otsu_threshold, thresholded = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 

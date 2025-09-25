@@ -4,11 +4,12 @@ import xml.etree.ElementTree as ET
 import czifile
 from image_analysis.analysis import GUV, HexagonalMesh
 import json
-
-
+import copy
+import uuid
+from datetime import datetime
 
 class ZeissImageProcessor:
-    def __init__(self, czi_file_path, analysis_channel=1, chosen_analysis='hexagonal'):
+    def __init__(self, czi_file_path, analysis_channel=1, chosen_analysis='GUVs'):
         self.czi_file_path = czi_file_path
         self.analysis_channel = analysis_channel
 
@@ -34,8 +35,8 @@ class ZeissImageProcessor:
     def extract_metadata(self, metadata_str):
         # Parsowanie metadanych z XML
         root = ET.fromstring(metadata_str)
-        tree = ET.ElementTree(root)
-        tree.write('metadata', encoding="utf-8", xml_declaration=True)
+        #tree = ET.ElementTree(root)
+        #tree.write('metadata', encoding="utf-8", xml_declaration=True)
         metadata = {}
         metadata["scaling_um_per_pixel"] = self._extract_scaling(root)
         metadata["channels"] = self._extract_channels(root)
@@ -137,74 +138,41 @@ class ZeissImageProcessor:
 
         if points is not None:
 
-            points_table_coordinates = self.pixel_to_stage(points)
+            points_table_coordinates = self.pixel_positions_to_stage_positions(points)
 
         else:
             points_table_coordinates = None
 
         return points_table_coordinates, points
 
-    def pixel_to_stage(self, measurement_points):
-        """
-        Convert measurement points (in pixels) into stage coordinates (in µm).
-        Keeps the same dict structure as measurement_points,
-        but values are np.ndarray of shape (N, 3).
-        """
+    def pixel_positions_to_stage_positions(self, points_list):
+        width, height = self.image_to_analyze.shape
+        stage_pos = self.metadata.get("stage_position", {"x": 10**(-6), "y": 10**(-6), "z": 10**(-6)})[0]
+        scaling = self.metadata["scaling_um_per_pixel"]
 
-        results = {}
+        transformed_points = copy.deepcopy(points_list)
+        for point in transformed_points:
+            px = np.array(point["position"], dtype=float)
 
-        # Image size
-        height, width = self.image_to_analyze.shape
+            x_um = stage_pos["x"] + (px[0] - width / 2) * scaling["X"] * 10**(6)
+            y_um = stage_pos["y"] + (px[1] - height / 2) * scaling["Y"]* 10**(6)
+            z_um = np.full_like(x_um, stage_pos["z"], dtype=float)
+            point["position"] = np.column_stack((x_um, y_um, z_um))[0].tolist()
+        return transformed_points
 
-        # Scaling (µm/pixel)
-        sx = self.metadata["scaling_um_per_pixel"].get("X") * 10**(6)
-        sy = self.metadata["scaling_um_per_pixel"].get("Y") * 10**(6)
+    def save_measurement_points(self, filename):
 
-        # Stage position (center of image)
-        stage_pos = (
-            self.metadata["stage_position"][0]
-            if self.metadata["stage_position"]
-            else {"x": 0, "y": 0, "z": 0}
-        )
-        X_stage, Y_stage, Z_stage = stage_pos["x"], stage_pos["y"], stage_pos["z"]
+        data = {}
 
-        def transform(points: np.ndarray) -> np.ndarray:
-            """Transform (N,2) array of pixel points into (N,3) array in µm."""
-            # Rozdziel na i, j
-            i = points[:, 0]  # x-pixels (col index)
-            j = points[:, 1]  # y-pixels (row index)
+        for p in self.measurement_points:
+            point_id = str(uuid.uuid4())
+            entry = dict(p)  # kopiujemy wszystkie istniejące pola tak jak są
+            entry["source"] = self.czi_file_path
+            entry["timestamp"] = datetime.utcnow().isoformat() + "Z"
+            data[point_id] = entry
 
-            x_um = X_stage + (i - width / 2) * sx
-            y_um = Y_stage + (j - height / 2) * sy
-            z_um = np.full_like(x_um, Z_stage, dtype=float)
-
-            return np.column_stack((x_um, y_um, z_um))
-
-        for key, pts in measurement_points.items():
-            pts = np.asarray(pts).reshape(-1, 2)  # upewnij się, że (N,2)
-            results[key] = transform(pts)
-
-        return results
-
-    def save_metadata(metadata_str, out_file="czi_metadata.xml"):
-        """Zapisuje pełne metadane XML do pliku."""
-        root = ET.fromstring(metadata_str)
-        tree = ET.ElementTree(root)
-        tree.write(out_file, encoding="utf-8", xml_declaration=True)
-
-
-    def save_measurement_points(self, path):
-        # Tworzymy kopię słownika, w której tablice numpy zamieniamy na listy
-        serializable_dict = {}
-        for key, value in self.measurement_points.items():
-            if isinstance(value, np.ndarray):
-                serializable_dict[key] = value.tolist()
-            else:
-                serializable_dict[key] = value
-
-        # Zapisujemy do pliku JSON
-        with open(path, 'w') as f:
-            json.dump(serializable_dict, f)
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 if __name__ == '__main__':
@@ -220,15 +188,15 @@ if __name__ == '__main__':
 
     main_path_GUVs = './czi_files/GUVs_Laura'
     main_path_hexagonal = './czi_files/01092025-onchip-3rd'
-    main_path = './czi_files/old_results'
+    main_path = './czi_files/image_for_analysis'
 
     main_directions = choose_chi_files(main_path)
     GUVs_directions = choose_chi_files(main_path_GUVs)
     hexagonal_directions = choose_chi_files(main_path_hexagonal)
 
 
-    obj_GUVs = ZeissImageProcessor(GUVs_directions[0], chosen_analysis='GUVs')
+    obj_GUVs = ZeissImageProcessor(GUVs_directions[0], analysis_channel=0, chosen_analysis='GUVs')
     obj_hex = ZeissImageProcessor(hexagonal_directions[0], chosen_analysis='hexagonal')
-    obj = ZeissImageProcessor(main_directions[0], analysis_channel=0, chosen_analysis='GUVs')
+    obj_main = ZeissImageProcessor(main_directions[6], analysis_channel=0, chosen_analysis='GUVs')
 
-    #obj_GUVs.save_measurement_points('measurement_points.json')
+    obj_main.save_measurement_points('measurement_points.json')

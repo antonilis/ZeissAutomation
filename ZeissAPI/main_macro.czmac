@@ -47,7 +47,7 @@ class ZeissApiProcessor:
 
     def execute_current_experiment(self):
         Zen.Acquisition.Execute(Zen.Acquisition.Experiments.ActiveExperiment)
-
+        time.sleep(10)
 
     def save_experiment_result(self, path):
         Zen.Application.Save(path)
@@ -66,11 +66,26 @@ def log(msg):
 
 
 
-experiments = {"FCS": "automation_FCS.czexp", "Image": "automation_imaging.czexp"}
+experiments = {"FCS": "automation_FCS.czexp", "Image": "automation_imaging.czexp", "RICS": "automation_RICS.czexp"}
 
-measuring_points_path = "D:\\zeiss\\Desktop\\automation\\data_points.json"
+measuring_points_path = "D:\\zeiss\\Desktop\\automation\\temp\\measurement_points.json"
 
 results_path = "D:\\zeiss\\Desktop\\automation\\results"
+
+
+def find_measure_GUV():
+
+    run_python_script()
+
+    processor = ZeissApiProcessor(experiments, measuring_points_path)
+
+
+    processor.load_experiment('Image')
+
+
+
+
+
 
 
 processor = ZeissApiProcessor(experiments, measuring_points_path)
