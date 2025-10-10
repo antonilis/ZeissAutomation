@@ -1,31 +1,35 @@
-<?xml version="1.0" encoding="utf-8"?>
-<Script>
-  <Context>Zen26</Context>
-  <Version>1.0</Version>
-  <Language>Python</Language>
-  <Text>
+< ?xml
+version = "1.0"
+encoding = "utf-8"? >
+< Script >
+< Context > Zen26 < / Context >
+< Version > 1.0 < / Version >
+< Language > Python < / Language >
+< Text >
 
 import json
 import time
-from execute_python import run_python_script                                  
+from System.IO import Path
+from execute_python import run_python_script
+import uuid
+
 
 class ZeissApiProcessor:
 
     def __init__(self, experiments, measuring_points_path):
-
-        self.experiments = experiments #dictionairy with the type of the experiments and path to them
+        self.experiments = experiments  # dictionairy with the type of the experiments and path to them
         self.measuring_points = self.read_measuring_points(measuring_points_path)
         self.stage_position = self.get_stage_focus_position()
 
     @staticmethod
     def read_measuring_points(path):
         with open(path, "r") as file:
-
             data = json.load(file)
 
         return data
 
-    def get_stage_focus_position(self):
+    @staticmethod
+    def get_stage_focus_position():
         x = Zen.Devices.Stage.ActualPositionX
         y = Zen.Devices.Stage.ActualPositionY
         z = Zen.Devices.Focus.ActualPosition
@@ -37,91 +41,91 @@ class ZeissApiProcessor:
         Zen.Devices.Stage.MoveTo(points_to_move[0], points_to_move[1])
         Zen.Devices.Focus.MoveTo(points_to_move[2])
 
-
     def load_experiment(self, chosen_experiment):
-
         experiment_path = self.experiments[chosen_experiment]
         exp = Zen.Acquisition.Experiments.GetByName(experiment_path)
         exp.SetActive()
-	    time.sleep(10)
+        time.sleep(10)
 
-    def execute_current_experiment(self):
+
+    @staticmethod
+    def execute_current_experiment():
         Zen.Acquisition.Execute(Zen.Acquisition.Experiments.ActiveExperiment)
         time.sleep(10)
 
-    def save_experiment_result(self, path):
-        Zen.Application.Save(path)
-        time.sleep(10)                    
 
-    def save_experiment_result(self, path):
-            image = Zen.Application.Documents.ActiveDocument
-            image.Save(path)
+    @staticmethod
+    def save_experiment_result(path, name):
+        image = Zen.Application.Documents.ActiveDocument
+
+        directory = Path.Combine(path, name)
+
+        image.Save(directory)
 
 
+# log function
 def log(msg):
     path = "D:\\zeiss\\Desktop\\zen_log.txt"
     with open(path, "a") as f:
         f.write(msg + "\n")
 
 
-
-
-experiments = {"FCS": "automation_FCS.czexp", "Image": "automation_imaging.czexp", "RICS": "automation_RICS.czexp"}
-
+####################### Initialization parameters ##############################################
+experiments = {"FCS": "automation_FCS.czexp", "Image_overview": "automation_imaging.czexp",
+               "Image_20xclose-up": "automation_imaging_20xclose-up.czexp",
+               "RICS": "automation_RICS.czexp"}
 measuring_points_path = "D:\\zeiss\\Desktop\\automation\\temp\\measurement_points.json"
 
 results_path = "D:\\zeiss\\Desktop\\automation\\results"
+image_for_analysis_path = "D:\\zeiss\\Desktop\\automation\\image_for_analysis"
+python_script_analysis_path = "D:\\zeiss\\Desktop\\automation\\image_preprocessing\\preprocessing.py"
+
+################################## Actual script: ##############################################
 
 
-def find_measure_GUV():
+# prepaire image for aquisition
+ZeissApiProcessor.execute_current_experiment()
+name = "{}_{}".format(uuid.uuid4(), "FCS")
+ZeissApiProcessor.save_experiment_results(image_for_analysis_path, name)
 
-    run_python_script()
+# analyze the image and save it:
+args = [Path.Combine(image_for_analysis_path, name), measuring_points_path]
 
-    processor = ZeissApiProcessor(experiments, measuring_points_path)
+run_python_script(args, python_script_analysis_path)
 
+# Utilize the measurements on the objects of the image
+Zen_obj = ZeissApiProcessor(experiments, measuring_points_path)
 
-    processor.load_experiment('Image')
+for object_id in Zen_obj.measuring_points.keys():
+    object = Zen_obj.measuring_points[object_id]
 
+    position = object['position']
+    radius = object['radius']
+    log(radius)
 
+    Zen_obj.move(position)
 
+    Zen_obj.load_experiment("Image_20xclose-up")
+    Zen_obj.execute_current_experiment()
+    Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "Image_20xclose-up"))
 
+    #z_scan_analysis()  # This I would do later and think about how to do it exactly
 
+    Zen_obj.load_experiment("RICS")
+    Zen_obj.execute_current_experiment()
+    Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "RICS"))
 
-
-processor = ZeissApiProcessor(experiments, measuring_points_path)
-
-current_position = processor.get_stage_focus_position()
-log(str(current_position))
-
-measuring_points = processor.measuring_points #check at this moment if those points make any sense
-log(str(measuring_points))
-
-processor.load_experiment('Image')
-
-
-#processor.save_experiment_result(results_path + "\\movement_picture.czi") 
-processor.execute_current_experiment()
-processor.save_experiment_result(results_path + "img.czi")
-#certain_points = measuring_points['centers'] 
-
-
-#for p in certain_points:
-    
-    #log(str(p))
-    #processor.move(p) 
-    #processor.execute_current_experiment()
+    Zen_obj.load_experiment("FCS")
+    Zen_obj.execute_current_experiment()
+    Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "FCS"))
 
 
 
-#processor.load_experiment('FCS')
-#processor.execute_current_experiment()
-#processor.save_experiment_result('XXX')
 
-# if this works, just write a loop that will go through all of the points and measure
-</Text>
-  <Author></Author>
-  <Description></Description>
-  <Keywords></Keywords>
-  <Row>24</Row>
-  <Column>45</Column>
-</Script>
+< / Text >
+< Author > < / Author >
+< Description > < / Description >
+< Keywords > < / Keywords >
+< Row > 24 < / Row >
+< Column > 45 < / Column >
+< / Script >

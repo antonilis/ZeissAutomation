@@ -1,12 +1,27 @@
 import numpy as np
 from scipy.spatial import Delaunay
-from scipy.spatial.distance import cdist
 from scipy.cluster.vq import kmeans, vq
-import matplotlib.pyplot as plt
 from skimage.filters import threshold_multiotsu
 import cv2
 from abc import ABC, abstractmethod
 from collections import defaultdict
+
+
+
+_REGISTRY = {}
+
+def register_class(cls):
+    _REGISTRY[cls.__name__] = cls
+    return cls
+
+
+
+def get_image_analysis_type(name):
+    return _REGISTRY.get(name)
+
+def get_available_analysis():
+    return _REGISTRY.keys()
+
 
 
 class ImageAnalysisTemplate(ABC):
@@ -18,7 +33,7 @@ class ImageAnalysisTemplate(ABC):
     def get_measurement_points(self):
         pass
 
-
+@register_class
 class HexagonalMesh(ImageAnalysisTemplate):
 
     def get_mesh_nodes(self):
@@ -148,8 +163,8 @@ class HexagonalMesh(ImageAnalysisTemplate):
 
         return measurement_points
 
-
-class GUV(ImageAnalysisTemplate):
+@register_class
+class FluorescentGUV(ImageAnalysisTemplate):
     @staticmethod
     def _classify_contours_by_area(contours, hierarchy, top_n=None):
         """
@@ -209,7 +224,7 @@ class GUV(ImageAnalysisTemplate):
 
         return results
 
-    def filter_by_size(self, GUVs_dict, min_size_um=5, max_size_um=100):
+    def filter_by_size(self, GUVs_dict, min_size_um=1, max_size_um=50):
         scale = np.mean([
             self.metadata['scaling_um_per_pixel']['X'],
             self.metadata['scaling_um_per_pixel']['Y']
@@ -243,3 +258,11 @@ class GUV(ImageAnalysisTemplate):
         measurement_point = self.filter_by_size(center_radius_dict)
 
         return measurement_point
+
+
+@register_class
+class TLGUV(ImageAnalysisTemplate):
+
+    def get_measurement_points(self):
+
+        return 'hej!'

@@ -1,15 +1,18 @@
 import os
 import numpy as np
 import xml.etree.ElementTree as ET
-import czifile
-from image_analysis.analysis import GUV, HexagonalMesh
+from pylibCZIrw import czi as pyczi
+from image_preprocessing.image_analysis.analysis import get_image_analysis_type, get_available_analysis
 import json
 import copy
 import uuid
 from datetime import datetime
+import sys
+import matplotlib.pyplot as plt
+
 
 class ZeissImageProcessor:
-    def __init__(self, czi_file_path, analysis_channel=1, chosen_analysis='GUVs'):
+    def __init__(self, czi_file_path, analysis_channel=1, chosen_analysis='FluorescentGUV'):
         self.czi_file_path = czi_file_path
         self.analysis_channel = analysis_channel
 
@@ -19,28 +22,26 @@ class ZeissImageProcessor:
         self.measurement_points, self.not_scaled_points = self.get_measurement_points()
 
     def load_czi_data(self, file_path, analysis_channel):
+        """
+        Ładuje dane z pliku CZI przy użyciu pylibCZIrw (obsługuje Zstd).
+        """
+        with pyczi.open_czi(file_path) as czidoc:
+            # wyciągamy i parsujemy metadane XML
+            metadata = self.extract_metadata(czidoc.raw_metadata)
+            image_data = self.get_image_to_analyze(czidoc, analysis_channel)
 
-        with czifile.CziFile(file_path) as czi:
-
-            metadata_str = czi.metadata()
-            metadata = self.extract_metadata(metadata_str)
-
-            image_data = czi.asarray()
-            axes = czi.axes  # np. "STCZYX"
-
-            image_to_analyze = self.get_image_to_analyze(image_data, axes, analysis_channel)
-
-            return metadata, image_to_analyze
+        return metadata, image_data
 
     def extract_metadata(self, metadata_str):
         # Parsowanie metadanych z XML
         root = ET.fromstring(metadata_str)
-        #tree = ET.ElementTree(root)
-        #tree.write('metadata', encoding="utf-8", xml_declaration=True)
+
         metadata = {}
         metadata["scaling_um_per_pixel"] = self._extract_scaling(root)
         metadata["channels"] = self._extract_channels(root)
-        metadata["stage_position"] = self._extract_positions(root)
+        metadata["stage_position"] = self._extract_positions(root)[0]
+
+
         return metadata
 
     def _extract_scaling(self, root):
@@ -101,31 +102,36 @@ class ZeissImageProcessor:
 
         return positions
 
-    def get_image_to_analyze(self, image, axes, analysis_channel):
+    def get_image_to_analyze(self, czidoc, analysis_channel):
 
+        # pobieramy bounding box i listę dostępnych wymiarów
+        bbox = czidoc.total_bounding_box
+        available_dims = list(bbox.keys())
 
-        slicer = []
-        for ax in axes:
-            if ax == "C":
-                slicer.append(analysis_channel)
-            elif ax in ["S", "T", "Z"]:  # wybieramy 0 jeśli nie analizujemy stacków/czasu
-                slicer.append(0)
-            else:
-                slicer.append(slice(None))  # zostawiamy całość, np. YX
+        # przygotowujemy plane – ustawiamy 0 tylko dla wymiarów planowych
+        plane = {}
+        plan_dims = ('C', 'Z', 'T', 'S', 'H', 'B')
+        for dim in available_dims:
+            if dim in plan_dims:
+                plane[dim] = 0
+        # ustawiamy wybrany kanał
+        if 'C' in available_dims:
+            plane['C'] = analysis_channel
 
-        img_channel = image[tuple(slicer)]
+        # wczytujemy obraz
+        img = czidoc.read(plane=plane)
+
+        # konwertujemy na numpy i usuwamy singletony
+        img_channel = np.squeeze(np.array(img))
 
         return np.squeeze(img_channel)
 
     def get_analysis_type(self, chosen_analysis):
-        available_analysis = {
-            'hexagonal': HexagonalMesh,
-            'GUVs': GUV
-        }
-        strategy_class = available_analysis.get(chosen_analysis)
+
+        strategy_class = get_image_analysis_type(chosen_analysis)
         if not strategy_class:
             raise ValueError(
-                f"Unknown analysis type: {chosen_analysis}, please choose from {available_analysis.keys()}")
+                f"Unknown analysis type: {chosen_analysis}, please choose from {get_available_analysis()}")
 
         return strategy_class(
             image=self.image_to_analyze,
@@ -147,15 +153,15 @@ class ZeissImageProcessor:
 
     def pixel_positions_to_stage_positions(self, points_list):
         width, height = self.image_to_analyze.shape
-        stage_pos = self.metadata.get("stage_position", {"x": 10**(-6), "y": 10**(-6), "z": 10**(-6)})[0]
+        stage_pos = self.metadata.get("stage_position", {"x": 10 ** (-6), "y": 10 ** (-6), "z": 10 ** (-6)})
         scaling = self.metadata["scaling_um_per_pixel"]
 
         transformed_points = copy.deepcopy(points_list)
         for point in transformed_points:
             px = np.array(point["position"], dtype=float)
 
-            x_um = stage_pos["x"] + (px[0] - width / 2) * scaling["X"] * 10**(6)
-            y_um = stage_pos["y"] + (px[1] - height / 2) * scaling["Y"]* 10**(6)
+            x_um = stage_pos["x"] + (px[0] - height / 2 + 0.5) * scaling["X"] * 10 ** (6)
+            y_um = stage_pos["y"] + (px[1] - height / 2 + 0.5) * scaling["Y"] * 10 ** (6)
             z_um = np.full_like(x_um, stage_pos["z"], dtype=float)
             point["position"] = np.column_stack((x_um, y_um, z_um))[0].tolist()
         return transformed_points
@@ -177,26 +183,18 @@ class ZeissImageProcessor:
 
 if __name__ == '__main__':
 
-    def choose_chi_files(main_path):
 
+    def choose_chi_files(main_path):
         files = [f for f in os.listdir(main_path) if f.lower().endswith('.czi')]
         directions = [os.path.join(main_path, file_path) for file_path in files]
 
         return directions
 
 
-
-    main_path_GUVs = './czi_files/GUVs_Laura'
-    main_path_hexagonal = './czi_files/01092025-onchip-3rd'
-    main_path = './czi_files/image_for_analysis'
-
+    main_path = './czi_files/problem_results'
+    #
     main_directions = choose_chi_files(main_path)
-    GUVs_directions = choose_chi_files(main_path_GUVs)
-    hexagonal_directions = choose_chi_files(main_path_hexagonal)
 
-
-    obj_GUVs = ZeissImageProcessor(GUVs_directions[0], analysis_channel=0, chosen_analysis='GUVs')
-    obj_hex = ZeissImageProcessor(hexagonal_directions[0], chosen_analysis='hexagonal')
-    obj_main = ZeissImageProcessor(main_directions[6], analysis_channel=0, chosen_analysis='GUVs')
-
-    obj_main.save_measurement_points('measurement_points.json')
+    obj_main = ZeissImageProcessor(main_directions[0], analysis_channel=0, chosen_analysis='FluorescentGUV')
+    #
+    # obj_main.save_measurement_points('measurement_points.json')

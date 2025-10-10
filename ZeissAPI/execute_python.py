@@ -11,12 +11,18 @@ def log(msg):
 python_exe = "D:\\zeiss\\Desktop\\automation\\venv\\Scripts\\python.exe"
 python_script = "D:\\zeiss\\Desktop\\automation\\image_preprocessing\\preprocessing.py"
 
-def run_python_script(python_path = python_exe, script_path = python_script):
+def run_python_script(args=None, script_path = python_script, python_path = python_exe):
 
     proc = Process()
-
     proc.StartInfo.FileName = python_path
-    proc.StartInfo.Arguments = script_path
+
+    arguments = [script_path]
+
+    if args:
+        arguments.extend(args)
+
+
+    proc.StartInfo.Arguments = " ".join(arguments)
     proc.StartInfo.UseShellExecute = False
     proc.StartInfo.RedirectStandardOutput = True
     proc.StartInfo.RedirectStandardError = True
