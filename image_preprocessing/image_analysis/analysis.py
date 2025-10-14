@@ -5,23 +5,25 @@ from skimage.filters import threshold_multiotsu
 import cv2
 from abc import ABC, abstractmethod
 from collections import defaultdict
-
+from cellpose import models
+import pandas as pd
+from skimage.measure import regionprops_table
 
 
 _REGISTRY = {}
+
 
 def register_class(cls):
     _REGISTRY[cls.__name__] = cls
     return cls
 
 
-
 def get_image_analysis_type(name):
     return _REGISTRY.get(name)
 
+
 def get_available_analysis():
     return _REGISTRY.keys()
-
 
 
 class ImageAnalysisTemplate(ABC):
@@ -32,6 +34,7 @@ class ImageAnalysisTemplate(ABC):
     @abstractmethod
     def get_measurement_points(self):
         pass
+
 
 @register_class
 class HexagonalMesh(ImageAnalysisTemplate):
@@ -163,6 +166,7 @@ class HexagonalMesh(ImageAnalysisTemplate):
 
         return measurement_points
 
+
 @register_class
 class FluorescentGUV(ImageAnalysisTemplate):
     @staticmethod
@@ -232,7 +236,7 @@ class FluorescentGUV(ImageAnalysisTemplate):
 
         filtered = []
         for v in GUVs_dict.values():
-            radius_um = v['radius'] * scale * 10**(6)
+            radius_um = v['radius'] * scale * 10 ** (6)
             if min_size_um <= radius_um <= max_size_um:
                 filtered.append({
                     'position': [v['center'][0], v['center'][1]],
@@ -246,7 +250,6 @@ class FluorescentGUV(ImageAnalysisTemplate):
         blurred = cv2.GaussianBlur(self.image, (5, 5), 0)
 
         otsu_threshold, thresholded = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
 
         found_contours, hierarchy = cv2.findContours(np.array(thresholded, dtype=np.uint8), cv2.RETR_CCOMP,
                                                      cv2.CHAIN_APPROX_SIMPLE)
@@ -263,6 +266,26 @@ class FluorescentGUV(ImageAnalysisTemplate):
 @register_class
 class TLGUV(ImageAnalysisTemplate):
 
+    def image_segmentation(self, objects_diameter=None):
+        model = models.Cellpose(model_type='cyto', gpu=True)
+
+        masks, flows, styles, diam_mean = model.eval([self.image], diameter=objects_diameter, channels=[0, 0])
+
+        props_table = regionprops_table(masks[0], properties=('label', 'area', 'centroid'))
+        df = pd.DataFrame(props_table)
+
+        return df
+
+
+
     def get_measurement_points(self):
 
-        return 'hej!'
+        objects_df = self.image_segmentation()
+
+        objects_df['radius'] = np.sqrt(objects_df['area'] / np.pi)
+
+        objects_df['position'] = objects_df[['centroid-1', 'centroid-0']].values.tolist()
+
+        measurement_points = (objects_df[['position', 'radius', 'area']].to_dict(orient='records'))
+
+        return measurement_points

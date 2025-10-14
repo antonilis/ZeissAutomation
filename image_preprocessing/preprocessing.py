@@ -191,10 +191,12 @@ if __name__ == '__main__':
         return directions
 
 
-    main_path = './czi_files/problem_results'
-    #
+    #main_path = './czi_files/problem_results'
+
+    main_path = '../result_processing/data/2025.10.01/image_for_analysis'
+
     main_directions = choose_chi_files(main_path)
 
-    obj_main = ZeissImageProcessor(main_directions[0], analysis_channel=0, chosen_analysis='FluorescentGUV')
+    obj_main = ZeissImageProcessor(main_directions[11], analysis_channel=2, chosen_analysis='TLGUV')
     #
-    # obj_main.save_measurement_points('measurement_points.json')
+    obj_main.save_measurement_points('measurement_points_TL.json')
