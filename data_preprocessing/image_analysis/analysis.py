@@ -27,9 +27,10 @@ def get_available_analysis():
 
 
 class ImageAnalysisTemplate(ABC):
-    def __init__(self, image, metadata):
+    def __init__(self, image, metadata, **analysis_details):
         self.image = image
         self.metadata = metadata
+        self.analysis_details = analysis_details
 
     @abstractmethod
     def get_measurement_points(self):
@@ -258,7 +259,7 @@ class FluorescentGUV(ImageAnalysisTemplate):
 
         center_radius_dict = self.get_contour_centers_and_radii(classified_external)
 
-        measurement_point = self.filter_by_size(center_radius_dict)
+        measurement_point = self.filter_by_size(center_radius_dict, **{k: v for k, v in self.analysis_details.items() if k in ["min_size_um", "max_size_um"]})
 
         return measurement_point
 
@@ -280,7 +281,7 @@ class TLGUV(ImageAnalysisTemplate):
 
     def get_measurement_points(self):
 
-        objects_df = self.image_segmentation()
+        objects_df = self.image_segmentation(**{k: v for k, v in self.analysis_details.items() if k in ["objects_diameter"]})
 
         objects_df['radius'] = np.sqrt(objects_df['area'] / np.pi)
 

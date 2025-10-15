@@ -1,1 +1,2 @@
-{"TLGUV":{"analysis_channel":2, "chosen_analysis":"TLGUV"}}
+{"TLGUV":{"analysis_channel":2, "chosen_analysis":"TLGUV", "objects_diameter": null},
+  "FLGUV": {"analysis_channel":0, "chosen_analysis": "FluorescentGUV", "min_size_um": 1, "max_size_um": 50}}

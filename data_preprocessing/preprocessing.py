@@ -12,13 +12,13 @@ import matplotlib.pyplot as plt
 
 
 class ZeissImageProcessor:
-    def __init__(self, czi_file_path, analysis_channel=1, chosen_analysis='FluorescentGUV'):
+    def __init__(self, czi_file_path, analysis_channel=1, chosen_analysis='FluorescentGUV', **analysis_details):
         self.czi_file_path = czi_file_path
         self.analysis_channel = analysis_channel
 
         self.metadata, self.image_to_analyze = self.load_czi_data(czi_file_path, analysis_channel)
 
-        self.image_analyzer = self.get_analysis_type(chosen_analysis)
+        self.image_analyzer = self.get_analysis_type(chosen_analysis, **analysis_details)
         self.measurement_points, self.not_scaled_points = self.get_measurement_points()
 
     def load_czi_data(self, file_path, analysis_channel):
@@ -40,7 +40,6 @@ class ZeissImageProcessor:
         metadata["scaling_um_per_pixel"] = self._extract_scaling(root)
         metadata["channels"] = self._extract_channels(root)
         metadata["stage_position"] = self._extract_positions(root)[0]
-
 
         return metadata
 
@@ -126,7 +125,7 @@ class ZeissImageProcessor:
 
         return np.squeeze(img_channel)
 
-    def get_analysis_type(self, chosen_analysis):
+    def get_analysis_type(self, chosen_analysis, **kwargs):
 
         strategy_class = get_image_analysis_type(chosen_analysis)
         if not strategy_class:
@@ -135,8 +134,7 @@ class ZeissImageProcessor:
 
         return strategy_class(
             image=self.image_to_analyze,
-            metadata=self.metadata
-        )
+            metadata=self.metadata, **kwargs)
 
     def get_measurement_points(self):
 
@@ -182,8 +180,6 @@ class ZeissImageProcessor:
 
 
 if __name__ == '__main__':
-
-
     def choose_chi_files(main_path):
         files = [f for f in os.listdir(main_path) if f.lower().endswith('.czi')]
         directions = [os.path.join(main_path, file_path) for file_path in files]
@@ -191,12 +187,15 @@ if __name__ == '__main__':
         return directions
 
 
-    #main_path = './czi_files/problem_results'
-
     main_path = '../result_processing/data/2025.10.01/image_for_analysis'
 
     main_directions = choose_chi_files(main_path)
 
-    obj_main = ZeissImageProcessor(main_directions[11], analysis_channel=2, chosen_analysis='TLGUV')
+    with open('../config/preprocessing_config.json', 'r') as file:
+        preprocessing_config = json.load(file)
+
+    details = preprocessing_config['FLGUV']
+
+    obj_main = ZeissImageProcessor(main_directions[11], **details)
     #
     obj_main.save_measurement_points('measurement_points_TL.json')
