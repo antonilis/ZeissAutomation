@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import json
-from image_preprocessing.preprocessing import ZeissImageProcessor
+from data_preprocessing.preprocessing import ZeissImageProcessor
 import re
 import numpy as np
 from utils import visualize_points

@@ -1,0 +1,6 @@
+{"python_exe" : "D:\\zeiss\\Desktop\\automation\\venv\\Scripts\\python.exe",
+  "python_script" : "D:\\zeiss\\Desktop\\automation\\data_preprocessing\\main_preprocessor.py",
+  "measuring_points_path": "D:\\zeiss\\Desktop\\automation\\temp\\measurement_points.json",
+  "results_path":"D:\\zeiss\\Desktop\\automation\\results",
+"image_for_analysis_path" : "D:\\zeiss\\Desktop\\automation\\image_for_analysis",
+  "python_script_analysis_path": "D:\\zeiss\\Desktop\\automation\\data_preprocessing\\main_preprocessor.py"}

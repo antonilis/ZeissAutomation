@@ -2,7 +2,7 @@ import os
 import numpy as np
 import xml.etree.ElementTree as ET
 from pylibCZIrw import czi as pyczi
-from image_preprocessing.image_analysis.analysis import get_image_analysis_type, get_available_analysis
+from data_preprocessing.image_analysis.analysis import get_image_analysis_type, get_available_analysis
 import json
 import copy
 import uuid

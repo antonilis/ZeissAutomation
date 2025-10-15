@@ -10,16 +10,12 @@ encoding = "utf-8"? >
 import json
 import time
 from System.IO import Path
-from execute_python import run_python_script
+from execute_python import run_python_script, log
 import uuid
 
 
+###################### class for API calls ###########################################################
 class ZeissApiProcessor:
-
-    def __init__(self, experiments, measuring_points_path):
-        self.experiments = experiments  # dictionairy with the type of the experiments and path to them
-        self.measuring_points = self.read_measuring_points(measuring_points_path)
-        self.stage_position = self.get_stage_focus_position()
 
     @staticmethod
     def read_measuring_points(path):
@@ -38,21 +34,23 @@ class ZeissApiProcessor:
 
     @staticmethod
     def move(points_to_move):
+        Zen.Devices.Focus.MoveTo(points_to_move[2] - 1200)
+
         Zen.Devices.Stage.MoveTo(points_to_move[0], points_to_move[1])
         Zen.Devices.Focus.MoveTo(points_to_move[2])
 
-    def load_experiment(self, chosen_experiment):
-        experiment_path = self.experiments[chosen_experiment]
-        exp = Zen.Acquisition.Experiments.GetByName(experiment_path)
+        Zen.Devices.Focus.MoveTo(points_to_move[2])
+
+    @staticmethod
+    def load_experiment(chosen_experiment):
+        exp = Zen.Acquisition.Experiments.GetByName(chosen_experiment)
         exp.SetActive()
         time.sleep(10)
-
 
     @staticmethod
     def execute_current_experiment():
         Zen.Acquisition.Execute(Zen.Acquisition.Experiments.ActiveExperiment)
         time.sleep(10)
-
 
     @staticmethod
     def save_experiment_result(path, name):
@@ -63,64 +61,55 @@ class ZeissApiProcessor:
         image.Save(directory)
 
 
-# log function
-def log(msg):
-    path = "D:\\zeiss\\Desktop\\zen_log.txt"
-    with open(path, "a") as f:
-        f.write(msg + "\n")
+######################## Configuration ##############################################
+CONFIG_PATH = "D:\\zeiss\\Desktop\\automation\\config\\path_config.json"
+EXPERIMENTS_PATH = "D:\\zeiss\\Desktop\\automation\\config\\experiments_list.json"
 
+with open(EXPERIMENTS_PATH, "r") as f:
+    experiments = json.load(f)
 
-####################### Initialization parameters ##############################################
-experiments = {"FCS": "automation_FCS.czexp", "Image_overview": "automation_imaging.czexp",
-               "Image_20xclose-up": "automation_imaging_20xclose-up.czexp",
-               "RICS": "automation_RICS.czexp"}
-measuring_points_path = "D:\\zeiss\\Desktop\\automation\\temp\\measurement_points.json"
+# Load paths from config
+with open(CONFIG_PATH, "r") as f:
+    config = json.load(f)
 
-results_path = "D:\\zeiss\\Desktop\\automation\\results"
-image_for_analysis_path = "D:\\zeiss\\Desktop\\automation\\image_for_analysis"
-python_script_analysis_path = "D:\\zeiss\\Desktop\\automation\\image_preprocessing\\preprocessing.py"
+results_path = config["results_path"]
+image_for_analysis_path = config["image_for_analysis_path"]
+measuring_points_path = config["measuring_points_path"]
+python_script_analysis_path = config["python_script_analysis_path"]
 
-################################## Actual script: ##############################################
+################################## Actual script: #######################################
 
 
 # prepaire image for aquisition
-ZeissApiProcessor.execute_current_experiment()
-name = "{}_{}".format(uuid.uuid4(), "FCS")
-ZeissApiProcessor.save_experiment_results(image_for_analysis_path, name)
+ZeissApiProcessor.load_experiment(experiments["Image_overview"])
+overview_id = uuid.uuid4()
+name = "{}_Image_overview.czi".format(overview_id)
+ZeissApiProcessor.save_experiment_result(image_for_analysis_path, name)
 
-# analyze the image and save it:
-args = [Path.Combine(image_for_analysis_path, name), measuring_points_path]
-
-run_python_script(args, python_script_analysis_path)
+# run python analysis
+args = [name, "TLGUV"]
+run_python_script(args)
 
 # Utilize the measurements on the objects of the image
-Zen_obj = ZeissApiProcessor(experiments, measuring_points_path)
+measurement_points = ZeissApiProcessor.read_measuring_points(
+    Path.Combine(measuring_points_path, "{}_measurements_points.json".format(name)))
 
-for object_id in Zen_obj.measuring_points.keys():
-    object = Zen_obj.measuring_points[object_id]
+for object_id in measurement_points.keys():
+    object = measurement_points[object_id]
 
-    position = object['position']
-    radius = object['radius']
-    log(radius)
+    ZeissApiProcessor.move(object['position'])
 
-    Zen_obj.move(position)
+    ZeissApiProcessor.load_experiment(experiments["Image_20xclose-up"])
+    ZeissApiProcessor.execute_current_experiment()
+    ZeissApiProcessor.save_experiment_result(results_path, "{}_{}".format(object_id, "Image_20xclose-up"))
 
-    Zen_obj.load_experiment("Image_20xclose-up")
-    Zen_obj.execute_current_experiment()
-    Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "Image_20xclose-up"))
-
-    #z_scan_analysis()  # This I would do later and think about how to do it exactly
-
-    Zen_obj.load_experiment("RICS")
-    Zen_obj.execute_current_experiment()
-    Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "RICS"))
-
-    Zen_obj.load_experiment("FCS")
-    Zen_obj.execute_current_experiment()
-    Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "FCS"))
-
-
-
+    # Zen_obj.load_experiment("RICS")
+    # Zen_obj.execute_current_experiment()
+    # Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "RICS"))
+    #
+    # Zen_obj.load_experiment("FCS")
+    # Zen_obj.execute_current_experiment()
+    # Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "FCS"))
 
 < / Text >
 < Author > < / Author >

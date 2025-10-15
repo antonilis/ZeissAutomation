@@ -1,4 +1,5 @@
 from System.Diagnostics import Process
+import json
 
 
 def log(msg):
@@ -7,12 +8,13 @@ def log(msg):
         f.write(msg + "\n")
 
 
+conf_path = "D:\\zeiss\\Desktop\\automation\\config\\preprocessing_config.json"
 
-python_exe = "D:\\zeiss\\Desktop\\automation\\venv\\Scripts\\python.exe"
-python_script = "D:\\zeiss\\Desktop\\automation\\image_preprocessing\\preprocessing.py"
+with open('config/preprocessing_config.json', 'r') as file:
+    path_config = json.load(file)
 
-def run_python_script(args=None, script_path = python_script, python_path = python_exe):
 
+def run_python_script(args=None, script_path=path_config['python_script'], python_path=path_config['python_exe']):
     proc = Process()
     proc.StartInfo.FileName = python_path
 
@@ -20,7 +22,6 @@ def run_python_script(args=None, script_path = python_script, python_path = pyth
 
     if args:
         arguments.extend(args)
-
 
     proc.StartInfo.Arguments = " ".join(arguments)
     proc.StartInfo.UseShellExecute = False
@@ -34,4 +35,3 @@ def run_python_script(args=None, script_path = python_script, python_path = pyth
     log(error)
 
     proc.WaitForExit()
-
