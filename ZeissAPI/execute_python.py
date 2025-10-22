@@ -8,15 +8,20 @@ def log(msg):
         f.write(msg + "\n")
 
 
-conf_path = "D:\\zeiss\\Desktop\\automation\\config\\preprocessing_config.json"
+conf_path = "D:\\zeiss\\Desktop\\automation\\config\\path_config.json"
 
-with open('config/preprocessing_config.json', 'r') as file:
+with open(conf_path, "r") as file:
     path_config = json.load(file)
-
 
 def run_python_script(args=None, script_path=path_config['python_script'], python_path=path_config['python_exe']):
     proc = Process()
     proc.StartInfo.FileName = python_path
+    
+    
+    proc.StartInfo.WorkingDirectory = path_config["python_project_root"]
+    
+    env = proc.StartInfo.EnvironmentVariables
+    env["PYTHONPATH"] = path_config["python_project_root"]                                     
 
     arguments = [script_path]
 

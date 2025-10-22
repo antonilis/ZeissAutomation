@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import json
-from data_preprocessing.preprocessing import ZeissImageProcessor
+from data_preprocessing.preprocessors.zeiss_image_preprocessor import ZeissImageProcessor
 import re
 import numpy as np
 from utils import visualize_points
@@ -37,12 +37,12 @@ class ZeissResultProcessor:
 
         ovearview_path = os.path.join(path, 'image_for_analysis')
 
-        final_overview_path = os.path.join(path, 'results/ovearview')
+        #final_overview_path = os.path.join(path, 'results/ovearview')
 
         overview_files = self.get_files_in_folder(ovearview_path, 'czi')
-        final_overview_files = self.get_files_in_folder(final_overview_path, 'czi')
+        #final_overview_files = self.get_files_in_folder(final_overview_path, 'czi')
 
-        files_path = overview_files + final_overview_files
+        files_path = overview_files #+ final_overview_files
 
         for file in files_path:
             obj = ZeissImageProcessor(file, analysis_channel=0, chosen_analysis='FluorescentGUV')
@@ -150,7 +150,7 @@ class ZeissResultProcessor:
         for file in files_path:
             date = os.path.getmtime(file)
 
-            obj = ZeissImageProcessor(file, analysis_channel=0, chosen_analysis='FluorescentGUV')
+            obj = ZeissImageProcessor(file, analysis_channel=0, chosen_analysis='FluorescentGUV', min_size_um=3.5, max_size_um=20)
             obj_properties = self.extract_object_properties(obj)
 
             obj_properties['creation date'] = date
@@ -176,9 +176,9 @@ class ZeissResultProcessor:
 
 
 if __name__ == '__main__':
-    path = './data/2025.10.06'
+    path = './data/2025_10_20/20_objective_blue_tack'
 
     obj = ZeissResultProcessor(path)
     result_df = obj.results
 
-    result_df.to_pickle('table_movement_analysis_result.pkl')
+    result_df.to_pickle('20_objective_blue_tack_table_movement_analysis_result.pkl')

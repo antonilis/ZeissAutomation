@@ -1,15 +1,13 @@
-< ?xml
-version = "1.0"
-encoding = "utf-8"? >
-< Script >
-< Context > Zen26 < / Context >
-< Version > 1.0 < / Version >
-< Language > Python < / Language >
-< Text >
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
 
 import json
 import time
-from System.IO import Path
+from System.IO import Directory, Path, File
 from execute_python import run_python_script, log
 import uuid
 
@@ -18,7 +16,7 @@ import uuid
 class ZeissApiProcessor:
 
     @staticmethod
-    def read_measuring_points(path):
+    def read_json(path):
         with open(path, "r") as file:
             data = json.load(file)
 
@@ -34,23 +32,32 @@ class ZeissApiProcessor:
 
     @staticmethod
     def move(points_to_move):
-        Zen.Devices.Focus.MoveTo(points_to_move[2] - 1200)
 
-        Zen.Devices.Stage.MoveTo(points_to_move[0], points_to_move[1])
+        ax, bx, ay, by = -0.019, 0.158, -0.015, -0.086
+
+        pos_curr = ZeissApiProcessor.get_stage_focus_position()
+
+        x_disp = points_to_move[0]-pos_curr[0]
+        y_disp = points_to_move[1] - pos_curr[1]
+
+        x_err = ax * x_disp + bx
+        y_err = ay * y_disp + by
+
+        Zen.Devices.Stage.MoveTo(points_to_move[0], points_to_move[1]) 
+        #Zen.Devices.Stage.MoveTo(points_to_move[0] - x_err, points_to_move[1] - y_err)
         Zen.Devices.Focus.MoveTo(points_to_move[2])
 
-        Zen.Devices.Focus.MoveTo(points_to_move[2])
 
     @staticmethod
     def load_experiment(chosen_experiment):
         exp = Zen.Acquisition.Experiments.GetByName(chosen_experiment)
         exp.SetActive()
-        time.sleep(10)
+        time.sleep(2)
 
     @staticmethod
     def execute_current_experiment():
         Zen.Acquisition.Execute(Zen.Acquisition.Experiments.ActiveExperiment)
-        time.sleep(10)
+        time.sleep(2)
 
     @staticmethod
     def save_experiment_result(path, name):
@@ -61,60 +68,218 @@ class ZeissApiProcessor:
         image.Save(directory)
 
 
-######################## Configuration ##############################################
-CONFIG_PATH = "D:\\zeiss\\Desktop\\automation\\config\\path_config.json"
-EXPERIMENTS_PATH = "D:\\zeiss\\Desktop\\automation\\config\\experiments_list.json"
 
-with open(EXPERIMENTS_PATH, "r") as f:
-    experiments = json.load(f)
+# ==============================================================================
+# PIPELINE CLASS
+# ==============================================================================
 
-# Load paths from config
-with open(CONFIG_PATH, "r") as f:
-    config = json.load(f)
+class AcquisitionPipeline:
+    """
+    Uniwersalny pipeline akwizycji w ZEN API (wersja IronPython-safe).
+    """
 
-results_path = config["results_path"]
-image_for_analysis_path = config["image_for_analysis_path"]
-measuring_points_path = config["measuring_points_path"]
-python_script_analysis_path = config["python_script_analysis_path"]
+    CONFIG_PATH = r"D:\zeiss\Desktop\automation\config\path_config.json"
+    EXPERIMENTS_PATH = r"D:\zeiss\Desktop\automation\config\experiments_list.json"
 
-################################## Actual script: #######################################
+    def __init__(self,
+                 choosen_experiments=None,
+                 reanalysis_experiments=None,
+                 post_reanalysis_experiments=None,
+                 reanalysis_python_script_args=None):
+
+        self.config = ZeissApiProcessor.read_json(self.CONFIG_PATH)
+        self.experiments = ZeissApiProcessor.read_json(self.EXPERIMENTS_PATH)
+
+        self.results_path = self.config["results_path"]
+        self.analysis_path = self.config["image_for_analysis_path"]
+        self.measuring_points_path = self.config["measuring_points_path"]
+        self.analysis_script_path = self.config["python_script"]
+
+        # zmienne wewnętrzne
+        self.overview_id = None
+        self.measurements_objects = {}
+
+        self.choosen_experiments = choosen_experiments or []
+        self.reanalysis_experiments = reanalysis_experiments or []
+        self.post_reanalysis_experiments = post_reanalysis_experiments or []
+        self.reanalysis_python_script_args = reanalysis_python_script_args or []
+
+    # ---------------------------------------
+    # Metoda overview
+    # ---------------------------------------
+    def acquire_overview(self, overview_experiment, analysis_args=None):
+         
+        log(str(self.experiments.keys())) 
+		   
+        exp_def = self.experiments[overview_experiment]
+        #if not exp_def: 
+            #raise Exception("Nie znaleziono eksperymentu overview: {}".format(overview_experiment[0]))
+
+        # Unikalny identyfikator na podstawie czasu
+        self.overview_id = str(uuid.uuid4())
+        overview_name = "{}_Image_overview.czi".format(self.overview_id)
+
+        #log("Uruchamiam overview eksperyment: {}".format(overview_experiment)) 
+        ZeissApiProcessor.load_experiment(exp_def)
+        ZeissApiProcessor.execute_current_experiment()
+        ZeissApiProcessor.save_experiment_result(self.analysis_path, overview_name)
+
+        if analysis_args:
+            # 0 - nazwa skryptu (z argumentu), 1 - nazwa pliku, 2 - tryb analizy (z argumentu)
+            args = ['overview', overview_name, analysis_args[0]]
+            log("Uruchamiam analize Overview Pythona z argumentami: {}".format(args))
+            run_python_script(args)
+
+        # Wczytanie punktów pomiarowych
+        self.load_measurements(self.overview_id)
+        log("Overview zakonczony, wczytano punkty pomiarowe.") 
+
+    # ---------------------------------------
+    # Wczytanie złożonych eksperymentów z JSON-a
+    # ---------------------------------------
+    def load_complex_experiments(self, json_path):
+        return ZeissApiProcessor.read_json(json_path)
+
+    # ---------------------------------------
+    # Wczytanie punktów pomiarowych
+    # ---------------------------------------
+    def load_measurements(self, overview_id, reanalyze=False):
+        """
+        Wczytuje punkty pomiarowe.
+        :param overview_id: identyfikator overview (nazwa pliku bazowego)
+        :param reanalyze: jeśli True – wczytuje punkty z reanalizy
+        """
+        if reanalyze:
+            file_name = "{}_measurements_points_reanalysis.json".format(overview_id)
+        else:
+            file_name = "{}_measurements_points.json".format(overview_id)
+
+        points_path = Path.Combine(self.measuring_points_path, file_name)
+
+        if not File.Exists(points_path):
+            raise Exception("Nie znaleziono pliku punktów pomiarowych: {}".format(file_name))
+
+        self.measurements_objects = ZeissApiProcessor.read_json(points_path)
+        log("Wczytano {} punktow pomiarowych z pliku {}".format(len(self.measurements_objects), file_name))
+
+        return self.measurements_objects
+
+    def _get_result_directory(self, obj_id, stage):
+        """Zwraca ścieżkę folderu wyników dla danego etapu (pre/reanalysis/post)."""
+        obj_dir = Path.Combine(self.results_path, "obj_{}".format(obj_id, stage))
+        if not Directory.Exists(obj_dir):
+            Directory.CreateDirectory(obj_dir)
+        return obj_dir
+    # ---------------------------------------
+    # Glowna metoda pipeline'u
+    # ---------------------------------------
+    def capture_objects(self, object_ids=None, reanalyze=False):
+        
+        if not self.measurements_objects:
+            raise Exception("Brak punktow pomiarowych uruchom acquire_overview() najpierw")  
+
+        if object_ids is None:
+            object_ids = list(self.measurements_objects.keys())
+            
+        log("It is ok") 
+      
+        for obj_id in object_ids:
+            obj = self.measurements_objects[obj_id]
+            ZeissApiProcessor.move(obj["position"])
+           
+
+            # --- 1️ Do experiments ---
+            for exp_name in self.choosen_experiments:
+                self._run_experiment(obj_id, exp_name, '_exp')
+
+            # --- 2 Reanalysis ---
+            if reanalyze and self.reanalysis_experiments:
+                for exp_name in self.reanalysis_experiments:
+                    self._run_experiment(obj_id, exp_name, stage="_reanalyzed")
+
+                if self.reanalysis_python_script_args:
+                    log("Uruchamiam skrypt Pythona dla obiektu")
+
+                    reanalysis_script_args = ['reanalysis', obj_id, self.reanalysis_python_script_args[0]]
+
+                    run_python_script(reanalysis_script_args)
+
+            # --- 3 Post-reanalysis experiments ---
+            for exp_name in self.post_reanalysis_experiments:
+                
+                #new_point = Path.Combine(self.measuring_points_path, file_name)
+                #reanalized_object = ZeissApiProcessor.read_json(self.measuring_points_path) nie rusza sie XD debilu zasrany
+                
+                
+                self._run_experiment(obj_id, exp_name, stage="_post")
+
+    # ---------------------------------------
+    # Uruchomienie pojedynczego eksperymentu lub złożonego
+    # ---------------------------------------
+    def _run_experiment(self, obj_id, exp_item,  stage):
+        """
+        Uruchamia eksperyment (zwykły lub złożony z JSON-a) dla danego obiektu.
+        """
+        # Jeśli eksperyment jest opisany w JSON (złożony)
+        if isinstance(exp_item, dict):
+            for exp_name in exp_item["zeiss_exp_names"]:
+                positions = exp_item.get("positions")
+                for i, pos_offset in enumerate(positions):
+                    folder = self._get_result_directory(obj_id, stage)
+                    self._run_at_offset(obj_id, exp_name, pos_offset, folder, stage="_pos{}".format(i))
+
+        # Zwykły eksperyment (pojedyncza nazwa)
+        folder = self._get_result_directory(obj_id, stage)
+        self._run_at_offset(obj_id, exp_item, [0, 0, 0], folder, stage)
+
+    # ---------------------------------------
+    # Uruchomienie eksperymentu z offsetem XYZ
+    # ---------------------------------------
+    def _run_at_offset(self, obj_id, exp_name, pos_offset, folder, stage):
+        """
+        Wykonuje pojedynczy eksperyment w danej pozycji (z offsetem XYZ).
+        """
+        x_off, y_off, z_off = pos_offset
+
+        curr_positions = ZeissApiProcessor.get_stage_focus_position()
+
+        new_pos = [curr_positions[0] + x_off, curr_positions[1] + y_off, curr_positions[2] + z_off]
+        ZeissApiProcessor.move(new_pos)
+
+        log("Uruchamiam eksperyment")
+														   
+
+        exp_def = self.experiments.get(exp_name)
+        if not exp_def:
+            raise Exception("Nie znaleziono eksperymentu: {}".format(exp_name))
+
+        ZeissApiProcessor.load_experiment(exp_def)
+        ZeissApiProcessor.execute_current_experiment()
+
+        file_name = "{}_{}{}.czi".format(obj_id, exp_name, stage)
+        ZeissApiProcessor.save_experiment_result(folder, file_name)
+
+        log("Zapisano wynik: {}".format(Path.Combine(folder, file_name)))
+
+ 
+
+################################## Actual Macro: #######################################
+pipeline = AcquisitionPipeline(
+    choosen_experiments=["Image_20xclose-up"],
+    reanalysis_experiments=["Image_20xclose-up"], #"image_multiZ"
+    reanalysis_python_script_args=["FLGUV"], #Max_intensity
+    post_reanalysis_experiments=["Image_20xclose-up"]
+)
 
 
-# prepaire image for aquisition
-ZeissApiProcessor.load_experiment(experiments["Image_overview"])
-overview_id = uuid.uuid4()
-name = "{}_Image_overview.czi".format(overview_id)
-ZeissApiProcessor.save_experiment_result(image_for_analysis_path, name)
 
-# run python analysis
-args = [name, "TLGUV"]
-run_python_script(args)
+pipeline.acquire_overview("Image_overview", analysis_args=["FLGUV"])
+pipeline.capture_objects(reanalyze=True)
 
-# Utilize the measurements on the objects of the image
-measurement_points = ZeissApiProcessor.read_measuring_points(
-    Path.Combine(measuring_points_path, "{}_measurements_points.json".format(name)))
-
-for object_id in measurement_points.keys():
-    object = measurement_points[object_id]
-
-    ZeissApiProcessor.move(object['position'])
-
-    ZeissApiProcessor.load_experiment(experiments["Image_20xclose-up"])
-    ZeissApiProcessor.execute_current_experiment()
-    ZeissApiProcessor.save_experiment_result(results_path, "{}_{}".format(object_id, "Image_20xclose-up"))
-
-    # Zen_obj.load_experiment("RICS")
-    # Zen_obj.execute_current_experiment()
-    # Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "RICS"))
-    #
-    # Zen_obj.load_experiment("FCS")
-    # Zen_obj.execute_current_experiment()
-    # Zen_obj.save_experiment_result(results_path, "{}_{}".format(object_id, "FCS"))
-
-< / Text >
-< Author > < / Author >
-< Description > < / Description >
-< Keywords > < / Keywords >
-< Row > 24 < / Row >
-< Column > 45 < / Column >
-< / Script >
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>54</Row>
+  <Column>43</Column>
+</Script>
