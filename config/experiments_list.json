@@ -1,1 +1,2 @@
-{"FCS": "automation_FCS.czexp", "Image_overview": "automation_imaging.czexp", "Image_20xclose-up": "automation_imaging_20xclose-up.czexp", "RICS": "automation_RICS.czexp"}
+{"FCS": "automation_FCS.czexp", "Image_overview": "automation_imaging.czexp", "Image_20xclose-up": "automation_imaging_20xclose-up.czexp", "RICS": "Adam_RICS_testing.czexp",
+"image_z_scan": "automation_imaging_zscan", "adam_overview": "Adam_overview", "adam_object": "Adam_overview_5x", "adam_zscan": "Adam_z_scan"}

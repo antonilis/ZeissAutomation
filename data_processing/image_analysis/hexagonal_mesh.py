@@ -6,8 +6,8 @@ import cv2
 
 
 
-from data_preprocessing.image_analysis.base_image_analyzer import ImageAnalysisTemplate
-from data_preprocessing.image_analysis.analysis_registry import register_class
+from data_processing.image_analysis.base_image_analyzer import ImageAnalysisTemplate
+from data_processing.image_analysis.analysis_registry import register_class
 
 
 

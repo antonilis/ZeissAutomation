@@ -27,6 +27,7 @@ class CziFileReader:
         metadata["scaling_um_per_pixel"] = self._extract_scaling(root)
         metadata["channels"] = self._extract_channels(root)
         metadata["stage_position"] = self._extract_positions(root)[0]
+        metadata['z_scan'] = self._extract_z_scan_informations(root)
 
         return metadata
 
@@ -88,26 +89,74 @@ class CziFileReader:
 
         return positions
 
-    def get_image_to_analyze(self, czidoc, analysis_channel):
+    def _extract_z_scan_informations(self, root):
 
+        z_scan_info = {
+            'is_activated': False,
+            'is_center_mode': False,
+            'is_interval_kept': False
+        }
+
+        z_stack_setup = root.find('.//ZStackSetup')
+
+        if z_stack_setup is not None:
+            # Check if Z-stack is activated
+            is_activated = z_stack_setup.get('IsActivated', 'false').lower() == 'true'
+            z_scan_info['is_activated'] = is_activated
+
+            # Get center mode
+            is_center_mode = z_stack_setup.find('IsCenterMode')
+            if is_center_mode is not None and is_center_mode.text:
+                z_scan_info['is_center_mode'] = is_center_mode.text.lower() == 'true'
+
+            # Get interval kept
+            is_interval_kept = z_stack_setup.find('IsIntervalKept')
+            if is_interval_kept is not None and is_interval_kept.text:
+                z_scan_info['is_interval_kept'] = is_interval_kept.text.lower() == 'true'
+            return z_scan_info
+
+        else:
+            return None
+
+
+    def get_image_to_analyze(self, czidoc, analysis_channel):
         # pobieramy bounding box i listę dostępnych wymiarów
         bbox = czidoc.total_bounding_box
         available_dims = list(bbox.keys())
 
-        # przygotowujemy plane – ustawiamy 0 tylko dla wymiarów planowych
-        plane = {}
-        plan_dims = ('C', 'Z', 'T', 'S', 'H', 'B')
-        for dim in available_dims:
-            if dim in plan_dims:
-                plane[dim] = 0
-        # ustawiamy wybrany kanał
-        if 'C' in available_dims:
-            plane['C'] = analysis_channel
+        z_size = bbox['Z'][1] - bbox['Z'][0]
 
-        # wczytujemy obraz
-        img = czidoc.read(plane=plane)
+        if z_size > 1:
+            z_stack = []
 
-        # konwertujemy na numpy i usuwamy singletony
-        img_channel = np.squeeze(np.array(img))
+            for z in range(z_size):
+                plane = {}
+                for dim in available_dims:
+                    if dim in ['C', 'Z', 'T', 'H', 'S', 'B']:
+                        if dim == 'C':
+                            plane['C'] = analysis_channel
+                        elif dim == 'Z':
+                            plane['Z'] = z
+                        else:
+                            plane[dim] = 0
 
-        return np.squeeze(img_channel)
+                img = czidoc.read(plane=plane)
+                img_array = np.squeeze(np.array(img))
+                z_stack.append(img_array)
+
+            z_stack = np.stack(z_stack, axis=0)
+            return z_stack
+        else:
+            plane = {}
+            for dim in available_dims:
+                if dim in ['C', 'Z', 'T', 'H', 'S', 'B']:
+                    if dim == 'C':
+                        plane['C'] = analysis_channel
+                    # elif dim == 'Z':
+                    #     plane['Z'] = 0  # domyślna warstwa Z
+                    else:
+                        plane[dim] = 0
+
+            img = czidoc.read(plane=plane)
+            img_array = np.squeeze(np.array(img))
+            return img_array

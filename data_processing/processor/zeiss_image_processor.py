@@ -7,8 +7,8 @@ import json
 import copy
 import uuid
 from datetime import datetime
-import data_preprocessing.image_analysis
-from data_preprocessing.image_analysis.analysis_registry import get_image_analysis_type, get_available_analysis
+import data_processing.image_analysis
+from data_processing.image_analysis.analysis_registry import get_image_analysis_type, get_available_analysis
 
 
 class ZeissImageProcessor:
@@ -44,19 +44,39 @@ class ZeissImageProcessor:
         return points_table_coordinates, points
 
     def pixel_positions_to_stage_positions(self, points_list):
-        width, height = self.image_to_analyze.shape
-        stage_pos = self.metadata.get("stage_position", {"x": 10 ** (-6), "y": 10 ** (-6), "z": 10 ** (-6)})
+
+        if len(self.image_to_analyze.shape) == 2:
+            height, width = self.image_to_analyze.shape
+        elif len(self.image_to_analyze.shape) == 3:
+            z_size, height, width = self.image_to_analyze.shape
+
+        else:
+            raise ValueError(f"Unexpected image shape: {self.image_to_analyze}")
+
+        stage_pos = self.metadata.get("stage_position")
         scaling = self.metadata["scaling_um_per_pixel"]
 
         transformed_points = copy.deepcopy(points_list)
         for point in transformed_points:
             px = np.array(point["position"], dtype=float)
 
-            x_um = stage_pos["x"] + (px[0] - height / 2 + 0.5) * scaling["X"] * 10 ** (6)
-            y_um = stage_pos["y"] + (px[1] - height / 2 + 0.5) * scaling["Y"] * 10 ** (6)
-            z_um = np.full_like(x_um, stage_pos["z"], dtype=float)
+            x_um = stage_pos["x"] + (px[0] - height / 2 + 0.5) * scaling["X"] * 10 ** 6
+            y_um = stage_pos["y"] + (px[1] - height / 2 + 0.5) * scaling["Y"] * 10 ** 6
+
+            if len(px) == 2:
+                z_um = np.full_like(x_um, stage_pos["z"], dtype=float)
+            elif len(px) == 3:
+                z_um = stage_pos['z'] + px[2] * scaling['Z'] * 10 ** 6
+            else:
+                raise ValueError(f"Unexpected point length: {self.image_to_analyze}")
+
             point["position"] = np.column_stack((x_um, y_um, z_um))[0].tolist()
         return transformed_points
+
+
+
+
+
 
     def save_measurement_points(self, filename):
 
