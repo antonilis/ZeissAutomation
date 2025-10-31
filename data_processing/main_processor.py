@@ -88,10 +88,20 @@ elif experiment_progress == 'reanalysis_xy':
     analysis_type = preprocessing_config[analysis_mode]
 
     obj = ZeissImageProcessor(file_path, **analysis_type)
-      
-    closest_point = choose_the_closest_point(obj.measurement_points, obj.metadata["stage_position"])
     
-    obj.measurement_points = [closest_point]
+    if len(obj.measurement_points) > 1:
+        print("Found multiple objects after reanalysis: {}".format(len(obj.measurement_points)))
+        closest_point = choose_the_closest_point(obj.measurement_points, obj.metadata["stage_position"])
+        obj.measurement_points = [closest_point]
+        
+    elif len(obj.measurement_points) == 0:
+        
+        print("Did not found any objects after xy-reanalysis")
+        
+    else:
+        
+        print("Found exactly one object after xy-reanalysis")
+        
     
     obj.save_measurement_points(os.path.join(measuring_dir, f"{obj_id}_measurements_points_reanalysis_xy.json"))
     visualize_points(obj, os.path.join(measuring_dir, f"{obj_id}_found_points_reanalysis_xy.png"))
@@ -101,5 +111,5 @@ elif experiment_progress == 'reanalysis_xy':
 
 
 else:
-    raise ValueError(f"Niepoprawny tryb eksperymentu: {experiment_progress}")
+    raise ValueError(f"Wrong analysis type: {experiment_progress}")
 

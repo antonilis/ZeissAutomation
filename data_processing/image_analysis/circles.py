@@ -8,7 +8,7 @@ from data_processing.image_analysis.analysis_registry import register_class
 
 
 @register_class
-class FluorescentGUV(ImageAnalysisTemplate):
+class Circles(ImageAnalysisTemplate):
     @staticmethod
     def _classify_contours_by_area(contours, hierarchy, top_n=None):
         """
@@ -43,7 +43,7 @@ class FluorescentGUV(ImageAnalysisTemplate):
         return [(ext) for (_, ext, largest_internal) in external_contours]
 
     @staticmethod
-    def get_contour_centers_and_radii(contours, min_fit_ratio=0.2):
+    def get_contour_centers_and_radii(contours, min_fit_ratio):
         """
         Returns a dictionary mapping contour indices to dicts {center: (cx, cy), radius: r}
         Only keeps contours that are reasonably circular.
@@ -91,19 +91,24 @@ class FluorescentGUV(ImageAnalysisTemplate):
 
         blurred = cv2.GaussianBlur(normalized, (3, 3), 0)
 
-        otsu_threshold, thresholded = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        if 'TL' not in self.analysis_details.keys():
+            otsu_threshold, thresholded = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            kernel = np.ones((3, 3), np.uint8)
+            for_contours_finding = cv2.morphologyEx(thresholded, cv2.MORPH_OPEN, kernel, iterations=1)
 
-        kernel = np.ones((3, 3), np.uint8)
-        # Otwarcie (erozja then dylatacja) usunie małe połączenia
-        opened = cv2.morphologyEx(thresholded, cv2.MORPH_OPEN, kernel, iterations=1)
+        else:
+            try:
+                for_contours_finding = cv2.Canny(blurred, 5, 15)
+            except cv2.error as e:
+                print(f"OpenCV2 problem: {e}")
+                for_contours_finding = np.zeros_like(self.image, dtype=np.uint8)
 
-
-        found_contours, hierarchy = cv2.findContours(np.array(opened, dtype=np.uint8), cv2.RETR_CCOMP,
+        found_contours, hierarchy = cv2.findContours(np.array(for_contours_finding, dtype=np.uint8), cv2.RETR_CCOMP,
                                                      cv2.CHAIN_APPROX_SIMPLE)
 
         classified_external = self._classify_contours_by_area(found_contours, hierarchy)
 
-        center_radius_dict = self.get_contour_centers_and_radii(classified_external)
+        center_radius_dict = self.get_contour_centers_and_radii(classified_external, self.analysis_details.get('min_fit_ratio', 0.2))
 
         measurement_point = self.filter_by_size(center_radius_dict, **{k: v for k, v in self.analysis_details.items() if k in ["min_size_um", "max_size_um"]})
 

@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+
+
+import json
+from System.IO import Directory, Path, File
+from execute_python import log
+
+
+class AcquisitionGrid:
+
+
+    CONFIG_PATH = r"D:\zeiss\Desktop\automation\config\path_config.json"
+
+    
+
+    def __init__(self, experiment_name = "AI_sample_finder"):
+
+        self.experiment_name = experiment_name
+        
+        self.config = self.read_json(self.CONFIG_PATH) 
+        
+        self.results_path = self.config["results_path"]        
+        
+        self.measuring_points_path = self.config["measuring_points_path"]
+        
+        self.points_for_overview = self.calculate_points_for_overview()
+
+    
+    
+    @staticmethod
+    def read_json(path):
+        with open(path, "r") as file:
+            data = json.load(file)
+
+        return data
+    
+    
+    def calculate_points_for_overview(self):
+
+        exp = Zen.Acquisition.Experiments.GetByName(self.experiment_name)
+
+        tile_region_objects = exp.GetTileRegionInfos(0) 
+
+        points_for_overview = []
+
+        for tile in tile_region_objects:
+
+            points = [tile.CenterX, tile.CenterY, tile.Z]
+
+            points_for_overview.append(points)
+
+        return points_for_overview
+        
+    def save_overview_points(self):
+        
+        file_name = 'points_for_overview.json'
+        
+        saving_path = Path.Combine(self.measuring_points_path, file_name)
+        
+        
+        with open(saving_path, 'w') as file:
+            
+            json.dump(self.points_for_overview, file)
+        
+        
+        
+
+
+
+grid_object = AcquisitionGrid()
+
+grid_object.save_overview_points()
+
+  
+  
+  
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>54</Row>
+  <Column>43</Column>
+</Script>

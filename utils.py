@@ -16,4 +16,4 @@ def visualize_points(ZIP_object, save_path=None):
     if save_path is not None:
         plt.savefig(save_path)
 
-    plt.close()
+    #plt.close()

@@ -83,7 +83,9 @@ class AcquisitionPipeline:
         self.measuring_points_path = self.config["measuring_points_path"]
         self.analysis_script_path = self.config["python_script"]
 
-
+        
+        
+        self.points_for_overivew = self.get_overview_points()
         self.overview_id = None
         self.measurements_objects = {}
 
@@ -96,7 +98,24 @@ class AcquisitionPipeline:
 
         self.post_reanalysis_experiments = post_reanalysis_experiments or []
 
-
+    
+    
+    def get_overview_points(self): 
+       
+        file_name = 'points_for_overview.json'
+        
+        points_path = Path.Combine(self.measuring_points_path, file_name)
+        
+        if File.Exists(points_path):
+            
+            points_for_overivew = ZeissApiProcessor.read_json(points_path)
+    
+        else:
+            points_for_overivew = None
+        
+        return points_for_overivew
+    
+    
     # ---------------------------------------
     # Metoda overview
     # ---------------------------------------
@@ -192,6 +211,7 @@ class AcquisitionPipeline:
                 self._run_experiment(obj_id, exp_name, stage="_post")
 
             log("Finished capturing object {}".format(obj_id))
+            Zen.Application.Documents.RemoveAll()
             
             
     def _perform_reanalysis(self, obj_id):
@@ -266,24 +286,32 @@ class AcquisitionPipeline:
 
 
 
-
-
-
 ################################## Actual Macro: #######################################
 
 
-
-
 pipeline = AcquisitionPipeline(
-    object_visualization_experiment= "adam_object", 
-    reanalysis_dict={'xy': 'TLGUV', 'z': {'z_experiment': 'adam_zscan', 'z_analysis': 'z_image_analysis'}}, 
-    post_reanalysis_experiments=["adam_object", "RICS"]
+    object_visualization_experiment= "Image_5xclose-up", 
+    reanalysis_dict={'xy': 'Cellpose', 'z': {'z_experiment': 'image_z_scan', 'z_analysis': 'z_image_analysis'}}, 
+    post_reanalysis_experiments=["Image_5xclose-up"] 
 )
 
 
 
-pipeline.acquire_overview("adam_overview", analysis_args=["TLGUV"])
-pipeline.capture_objects(reanalyze=True)
+log(str(pipeline.points_for_overivew[0]))
+
+
+for position in pipeline.points_for_overivew:
+    
+    
+    ZeissApiProcessor.move(position)
+    
+    pipeline.acquire_overview("Image_overview", analysis_args=["Cellpose"]) 
+    
+    
+    pipeline.capture_objects(reanalyze=True)
+
+
+
 
 </Text>
   <Author></Author>
