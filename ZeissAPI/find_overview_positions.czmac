@@ -1,80 +1,128 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Script>
   <Context>Zen26</Context>
   <Version>1.0</Version>
   <Language>Python</Language>
   <Text>
-
-
 import json
 from System.IO import Directory, Path, File
 from execute_python import log
 
 
+def get_stage_focus_position():
+    x = Zen.Devices.Stage.ActualPositionX
+    y = Zen.Devices.Stage.ActualPositionY
+    z = Zen.Devices.Focus.ActualPosition
+
+    return [x, y, z]
+
 class AcquisitionGrid:
-
-
     CONFIG_PATH = r"D:\zeiss\Desktop\automation\config\path_config.json"
 
-    
-
-    def __init__(self, experiment_name = "AI_sample_finder"):
-
+    def __init__(
+        self, 
+        experiment_name="AI_sample_finder", 
+        mode="experiment",  # 'experiment' or 'manual'
+        manual_points=None  # lista punktów, jeśli mode == 'manual' dict. 
+    ):
         self.experiment_name = experiment_name
-        
-        self.config = self.read_json(self.CONFIG_PATH) 
-        
-        self.results_path = self.config["results_path"]        
-        
-        self.measuring_points_path = self.config["measuring_points_path"]
-        
-        self.points_for_overview = self.calculate_points_for_overview()
+        self.mode = mode
+        self.manual_points = manual_points or []
 
-    
-    
+        self.config = self.read_json(self.CONFIG_PATH)
+        self.results_path = self.config["results_path"]
+        self.measuring_points_path = self.config["measuring_points_path"]
+
+        # wybierz odpowiedni sposób generowania punktów
+        if self.mode == "experiment":
+            self.points_for_overview = self.calculate_points_for_overview()
+        elif self.mode == "manual":
+            self.points_for_overview = self.generate_grid_from_args()
+        else:
+            raise ValueError("Unknown mode: {}".format(self.mode))
+
     @staticmethod
     def read_json(path):
         with open(path, "r") as file:
-            data = json.load(file)
+            return json.load(file)
 
-        return data
-    
-    
     def calculate_points_for_overview(self):
-
         exp = Zen.Acquisition.Experiments.GetByName(self.experiment_name)
-
-        tile_region_objects = exp.GetTileRegionInfos(0) 
+        tile_region_objects = exp.GetTileRegionInfos(0)
 
         points_for_overview = []
-
         for tile in tile_region_objects:
-
-            points = [tile.CenterX, tile.CenterY, tile.Z]
-
-            points_for_overview.append(points)
-
+            points_for_overview.append({
+                "position": [tile.CenterX, tile.CenterY, tile.Z],
+                "name": tile.Name,
+            })
         return points_for_overview
         
+        
+    def generate_grid_from_args(self):
+        """Tworzy siatkę punktów na podstawie start/end i przesunięć"""
+        cfg = self.manual_points
+
+        # Walidacja
+        required = ["start", "end", "shift_x", "shift_y", "start_position"]
+        for r in required:
+            if r not in cfg:
+                raise ValueError("Missing '{}' in manual_points".format(r))
+
+        start_label = cfg["start"].upper()
+        end_label = cfg["end"].upper()
+
+        # Konwersja np. "A1" -&gt; ('A', 1)
+        start_col, start_row = start_label[0], int(start_label[1:])
+        end_col, end_row = end_label[0], int(end_label[1:])
+
+        # Liczba kolumn i wierszy
+        cols = [chr(c) for c in range(ord(start_col), ord(end_col) + 1)]
+        rows = list(range(start_row, end_row + 1))
+
+        shift_x = cfg["shift_x"]
+        shift_y = cfg["shift_y"]
+        base_x, base_y, base_z = cfg["start_position"]
+
+        points = []
+        for c_idx, col in enumerate(cols):          # litery -&gt; Y
+            for r_idx, row in enumerate(rows):      # liczby -&gt; X
+                x = base_x + r_idx * shift_x        # liczby przesuwają X
+                y = base_y + c_idx * shift_y        # litery przesuwają Y
+                z = base_z
+                name = "{}{}".format(col, row)
+                points.append({
+                    "name": name,
+                    "position": [x, y, z]
+                })
+        log("Generated {} manual grid points.".format(len(points)))
+        return points
+
     def save_overview_points(self):
-        
-        file_name = 'points_for_overview.json'
-        
+        file_name = "points_for_overview.json"
         saving_path = Path.Combine(self.measuring_points_path, file_name)
-        
-        
-        with open(saving_path, 'w') as file:
-            
-            json.dump(self.points_for_overview, file)
-        
-        
-        
+        with open(saving_path, "w") as file:
+            json.dump(self.points_for_overview, file, indent=2)
 
 
+# --- Przykłady użycia ---
 
-grid_object = AcquisitionGrid()
+# Tryb eksperymentowy (bez zmian)
 
-grid_object.save_overview_points()
+
+start_position = get_stage_focus_position()
+
+manual_points = {
+    "start": "G4", 
+    "end": "J11",
+    "shift_x": 4500.0,
+    "shift_y": 4500.0,
+    "start_position": start_position,
+}
+
+grid_manual = AcquisitionGrid(mode="manual", manual_points=manual_points)
+grid_manual.save_overview_points()
+
 
   
   
@@ -83,6 +131,6 @@ grid_object.save_overview_points()
   <Author></Author>
   <Description></Description>
   <Keywords></Keywords>
-  <Row>54</Row>
-  <Column>43</Column>
+  <Row>80</Row>
+  <Column>12</Column>
 </Script>

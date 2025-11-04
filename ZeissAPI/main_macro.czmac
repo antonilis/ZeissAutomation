@@ -4,7 +4,6 @@
   <Version>1.0</Version>
   <Language>Python</Language>
   <Text>
-
 import json
 import time
 from System.IO import Directory, Path, File
@@ -32,9 +31,8 @@ class ZeissApiProcessor:
 
     @staticmethod
     def move(points_to_move):
-        Zen.Devices.Stage.MoveTo(points_to_move[0], points_to_move[1]) 
+        Zen.Devices.Stage.MoveTo(points_to_move[0], points_to_move[1])
         Zen.Devices.Focus.MoveTo(points_to_move[2])
-
 
     @staticmethod
     def load_experiment(chosen_experiment):
@@ -55,7 +53,6 @@ class ZeissApiProcessor:
         directory = Path.Combine(path, name)
 
         image.Save(directory)
-
 
 
 # ==============================================================================
@@ -83,9 +80,7 @@ class AcquisitionPipeline:
         self.measuring_points_path = self.config["measuring_points_path"]
         self.analysis_script_path = self.config["python_script"]
 
-        
-        
-        self.points_for_overivew = self.get_overview_points()
+        self.points_for_overview = self.get_overview_points()
         self.overview_id = None
         self.measurements_objects = {}
 
@@ -98,28 +93,25 @@ class AcquisitionPipeline:
 
         self.post_reanalysis_experiments = post_reanalysis_experiments or []
 
-    
-    
-    def get_overview_points(self): 
-       
+    def get_overview_points(self):
+
         file_name = 'points_for_overview.json'
-        
+
         points_path = Path.Combine(self.measuring_points_path, file_name)
-        
+
         if File.Exists(points_path):
-            
-            points_for_overivew = ZeissApiProcessor.read_json(points_path)
-    
+
+            points_for_overview = ZeissApiProcessor.read_json(points_path)
+
         else:
-            points_for_overivew = None
-        
-        return points_for_overivew
-    
-    
+            points_for_overview = None
+
+        return points_for_overview
+
     # ---------------------------------------
     # Metoda overview
     # ---------------------------------------
-    def acquire_overview(self, overview_experiment, analysis_args=None):
+    def acquire_overview(self, overview_experiment, analysis_args=None, name=None):
 
         log('Initializing overview experiment')
 
@@ -128,7 +120,11 @@ class AcquisitionPipeline:
             raise Exception("Did not found the experiment: {}".format(overview_experiment[0]))
 
         self.overview_id = str(uuid.uuid4())
-        overview_name = "{}_Image_overview.czi".format(self.overview_id)
+
+        if name is None:
+            overview_name = "{}_Image_overview.czi".format(self.overview_id)
+        else:
+            overview_name = "{}_{}_Image_overview.czi".format(name, self.overview_id)
 
         ZeissApiProcessor.load_experiment(exp_def)
         ZeissApiProcessor.execute_current_experiment()
@@ -141,23 +137,30 @@ class AcquisitionPipeline:
             args = ['overview', overview_name, analysis_args[0]]
             log("Initializing the overview image analysis: {}".format(args))
             run_python_script(args)
-
-        self.measurements_objects = self.load_measurements(self.overview_id) 
+        
+            self.measurements_objects = self.load_measurements(self.overview_id, name=name) 
+            
         log("Overview finished")
 
-
-    def load_measurements(self, obj_id, reanalysis_type=None):
-
+    def load_measurements(self, obj_id, reanalysis_type=None, name=None):
+        
+        if name is None:
+            
+            full_name = obj_id
+        else:
+            
+            full_name = "{}_{}".format(name, obj_id)
 
         if reanalysis_type is None:
-            file_name = "{}_measurements_points.json".format(obj_id)
+            file_name = "{}_measurements_points.json".format(full_name)
         elif reanalysis_type.lower() == "xy":
-            file_name = "{}_measurements_points_reanalysis_xy.json".format(obj_id)
+            file_name = "{}_measurements_points_reanalysis_xy.json".format(full_name)
         elif reanalysis_type.lower() == "z":
-            file_name = "{}_measurements_points_reanalysis_z.json".format(obj_id)
+            file_name = "{}_measurements_points_reanalysis_z.json".format(full_name)
         else:
             raise Exception("Unknown reanalysis type: {}".format(reanalysis_type))
-
+            
+            
         points_path = Path.Combine(self.measuring_points_path, file_name)
 
         if not File.Exists(points_path):
@@ -169,76 +172,98 @@ class AcquisitionPipeline:
 
         return data
 
-    def _get_result_directory(self, obj_id, stage):
+    def _get_result_directory(self, obj_id, stage, name=None):
 
-        obj_dir = Path.Combine(self.results_path, "obj_{}".format(obj_id, stage))
+        if name is None:
+            obj_dir = Path.Combine(self.results_path, "obj_{}".format(obj_id, stage))
+
+        else:
+            obj_dir = Path.Combine(self.results_path, name, "obj_{}".format(obj_id, stage))
+
         if not Directory.Exists(obj_dir):
             Directory.CreateDirectory(obj_dir)
         return obj_dir
+
     # ---------------------------------------
     # Main pipe-line method
     # ---------------------------------------
-    def capture_objects(self, object_ids=None, reanalyze=False):
-        
+    def capture_objects(self, object_ids=None, name=None):
+
         if not self.measurements_objects:
             raise Exception("No overview results, please initialize overview")
 
         if object_ids is None:
             object_ids = list(self.measurements_objects.keys())
-            
+
         log("Initialized capturing objects")
-      
+
         for obj_id in object_ids:
             obj = self.measurements_objects[obj_id]
             ZeissApiProcessor.move(obj["position"])
-            
+
             # --- 1️ Do object visualization experiment ---
-            self._run_experiment(obj_id, self.object_visualization_experiment, '_exp')
+            self._run_experiment(obj_id, self.object_visualization_experiment, stage='_exp', name=name)
 
             log('Finished visualization of object {}'.format(obj_id))
 
             # --- 2 Reanalysis ---
             if self.perform_reanalysis:
-                
                 log("Initialized reanalysis of object: {}".format(obj_id))
+                if self.reanalysis_dict['xy']:
+                    self._perform_reanalysis_xy(obj_id, name)
                 
-                self._perform_reanalysis(obj_id) 
-                
-            for exp_name in self.post_reanalysis_experiments:
+                if self.reanalysis_dict['z']:
+                    
+                    self._perform_reanalysis_z(obj_id, name)
 
+            for exp_name in self.post_reanalysis_experiments:
                 log('Running experiment {} on object {}'.format(exp_name, obj_id))
 
-                self._run_experiment(obj_id, exp_name, stage="_post")
+                self._run_experiment(obj_id, exp_name, stage="_post", name=name)
 
             log("Finished capturing object {}".format(obj_id))
             Zen.Application.Documents.RemoveAll()
             
-            
-    def _perform_reanalysis(self, obj_id):
+
+    def _perform_reanalysis_xy(self, obj_id, name=None):
         log('Initialized reanalysis of object {}'.format(obj_id))
- 
-        args_xy = ['reanalysis_xy', obj_id, self.reanalysis_dict['xy']]
+
+        if name is None:
+            file_name = obj_id
+        else:
+            file_name = "{}|{}".format(name, obj_id) 
+
+        args_xy = ['reanalysis_xy', file_name, self.reanalysis_dict['xy']]
         log("Running XY reanalysis script with args: {}".format(args_xy))
         run_python_script(args_xy)
 
-        new_data = self.load_measurements(obj_id, reanalysis_type="xy")
+        new_data = self.load_measurements(obj_id, reanalysis_type="xy", name=name)
+        
         if not new_data:
             log("Warning: No XY reanalysis points found for object {}".format(obj_id))
             return
 
         if isinstance(new_data, dict):
             first_key = list(new_data.keys())[0]
-            point = new_data[first_key] 
+            point = new_data[first_key]
 
         else:
             raise Exception("Unexpected format of XY reanalysis data for object {}".format(obj_id))
 
-        if len(new_data) > 1: 
+        if len(new_data) > 1:
             log("Note: Found {} XY reanalysis points, using the first one ({})".format(len(new_data), first_key))
 
-        ZeissApiProcessor.move(point["position"]) 
+        ZeissApiProcessor.move(point["position"])
         log("Moved stage to XY reanalysis position for object {}".format(obj_id))
-
+        
+    
+    def _perform_reanalysis_z(self, obj_id, name=None):
+    
+        if name is None:
+            file_name = obj_id
+        else:
+            file_name = "{}|{}".format(name, obj_id) 
+    
         # --- Z reanalysis ---
         z_cfg = self.reanalysis_dict.get('z')
         if not z_cfg:
@@ -248,29 +273,28 @@ class AcquisitionPipeline:
         z_exp = z_cfg['z_experiment']
         z_analysis = z_cfg['z_analysis']
 
-        self._run_experiment(obj_id, z_exp, stage="_reanalysis_z")
+        self._run_experiment(obj_id, z_exp, stage="_reanalysis_z", name=name)
 
-        
-        args_z = ['reanalysis_z', obj_id, z_analysis]
+        args_z = ['reanalysis_z', file_name, z_analysis]
         log("Running Z reanalysis script with args: {}".format(args_z))
         run_python_script(args_z)
 
-        z_data = self.load_measurements(obj_id, reanalysis_type="z")
-        
+        z_data = self.load_measurements(obj_id, reanalysis_type="z", name=name)
+
         new_positions = z_data[list(z_data.keys())[0]]['position']
-        
+
         ZeissApiProcessor.move(new_positions)
-                
+
         log("Moved stage to Z reanalysis position for object {}".format(obj_id))
 
         log("Finished reanalysis for object {}".format(obj_id))
+
     # ---------------------------------------
     # Uruchomienie pojedynczego eksperymentu
     # ---------------------------------------
-    def _run_experiment(self, obj_id, exp_item,  stage):
+    def _run_experiment(self, obj_id, exp_item, stage, name=None):
 
-
-        folder = self._get_result_directory(obj_id, stage)
+        folder = self._get_result_directory(obj_id, stage, name)
 
         exp_def = self.experiments[exp_item]
         if not exp_def:
@@ -285,34 +309,27 @@ class AcquisitionPipeline:
         log("Saved the result: {}".format(Path.Combine(folder, file_name)))
 
 
-
 ################################## Actual Macro: #######################################
 
 
 pipeline = AcquisitionPipeline(
-    object_visualization_experiment= "Image_5xclose-up", 
-    reanalysis_dict={'xy': 'Cellpose', 'z': {'z_experiment': 'image_z_scan', 'z_analysis': 'z_image_analysis'}}, 
-    post_reanalysis_experiments=["Image_5xclose-up"] 
+    object_visualization_experiment="Image_5xclose-up",
+    reanalysis_dict={'xy': 'Cellpose','z': {'z_experiment': 'zscan_fast_Adam', 'z_analysis': 'z_image_analysis'}},
+    post_reanalysis_experiments=["Image_5xclose-up", "adam_RICS_fast"]
 )
 
 
 
-log(str(pipeline.points_for_overivew[0]))
+
+for point in pipeline.points_for_overview:
 
 
-for position in pipeline.points_for_overivew:
+    pipeline.acquire_overview(overview_experiment="Image_overview", analysis_args=['Cellpose'],name=point['name'])
+    pipeline.capture_objects(name=point['name'])
     
-    
-    ZeissApiProcessor.move(position)
-    
-    pipeline.acquire_overview("Image_overview", analysis_args=["Cellpose"]) 
-    
-    
-    pipeline.capture_objects(reanalyze=True)
 
 
-
-
+  
 </Text>
   <Author></Author>
   <Description></Description>

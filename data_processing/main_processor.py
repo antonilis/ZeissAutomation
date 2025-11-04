@@ -4,6 +4,7 @@ from utils import visualize_points
 import sys
 import os
 import numpy as np
+import re
 
 with open('config/preprocessing_config.json', 'r') as file:
     preprocessing_config = json.load(file)
@@ -25,31 +26,62 @@ def choose_the_closest_point(measurement_points, stage_position):
     
     return measurement_points[closest_idx]
 
-
+def is_uuid(s: str) -> bool:
+    """Sprawdza, czy string wyglada jak UUID (w formacie 8-4-4-4-12)."""
+    return bool(re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        s
+    ))
 
 
 
 if experiment_progress == 'overview':
     file_name = sys.argv[2]
-    file_id = file_name.split("_")[0]
+    
+    parts = os.path.splitext(file_name)[0].split("_")
+
+    uuid_idx = next((i for i, p in enumerate(parts) if is_uuid(p)), None)
+
+    if uuid_idx is not None:
+        # mamy uuid — zwracamy np. name_uuid
+        if uuid_idx > 0:
+            file_id = f"{parts[uuid_idx - 1]}_{parts[uuid_idx]}"
+        else:
+            file_id = parts[uuid_idx]
+    else:
+        # brak uuid — zwracamy np. 0
+        file_id = parts[0]
 
     file_path = os.path.join(path_config['image_for_analysis_path'], file_name)
     measuring_dir = path_config['measuring_points_path']
     analysis_type = preprocessing_config[analysis_mode]
 
     obj = ZeissImageProcessor(file_path, **analysis_type)
-
+       
+    print(os.path.join(measuring_dir, f"{file_id}_measurements_points.json"))
+    
     obj.save_measurement_points(os.path.join(measuring_dir, f"{file_id}_measurements_points.json"))
     visualize_points(obj, os.path.join(measuring_dir, f"{file_id}_found_points.png"))
 
     print(f"Finished overview analysis for: {file_name}")
 
 elif experiment_progress == 'reanalysis_z':
-    obj_id = sys.argv[2]
-    reanalysis_dir = os.path.join(path_config['results_path'], f"obj_{obj_id}")
-    print(reanalysis_dir)
-    
-    print(os.listdir(reanalysis_dir))
+    file_name = sys.argv[2]
+
+    if '|' in file_name:
+        folder_name, obj_id = file_name.split('|', 1)
+        
+        print("1: {}, 2: {}".format(folder_name, obj_id))
+        
+        reanalysis_dir = os.path.join(path_config['results_path'], folder_name, f"obj_{obj_id}")
+        
+        saving_name = f"{folder_name}_{obj_id}"
+        
+    else:
+        obj_id = file_name
+        saving_name = obj_id
+        reanalysis_dir = os.path.join(path_config['results_path'], f"obj_{obj_id}")
+
     
     # znajdź pierwszy plik .czi
     czi_files = [f for f in os.listdir(reanalysis_dir) if f.lower().endswith("reanalysis_z.czi")]
@@ -61,20 +93,30 @@ elif experiment_progress == 'reanalysis_z':
     measuring_dir = path_config['measuring_points_path']
     analysis_type = preprocessing_config[analysis_mode]
 
-    obj = ZeissImageProcessor(file_path, **analysis_type)
+    obj = ZeissImageProcessor(file_path, **analysis_type)   
     
-    
-    obj.save_measurement_points(os.path.join(measuring_dir, f"{obj_id}_measurements_points_reanalysis_z.json"))
+    obj.save_measurement_points(os.path.join(measuring_dir, f"{saving_name}_measurements_points_reanalysis_z.json"))
 
 
     print(f"Finished z reanalysis of object: {obj_id}")
 
 
 elif experiment_progress == 'reanalysis_xy':
-    obj_id = sys.argv[2]
-    reanalysis_dir = os.path.join(path_config['results_path'], f"obj_{obj_id}")
-    
-    print(reanalysis_dir)
+    file_name = sys.argv[2]
+
+    if '|' in file_name:
+        folder_name, obj_id = file_name.split('|', 1)
+        
+        print("1: {}, 2: {}".format(folder_name, obj_id))
+        
+        reanalysis_dir = os.path.join(path_config['results_path'], folder_name, f"obj_{obj_id}")
+        
+        saving_name = f"{folder_name}_{obj_id}"
+        
+    else:
+        obj_id = file_name
+        saving_name = obj_id
+        reanalysis_dir = os.path.join(path_config['results_path'], f"obj_{obj_id}")
 
     # znajdź pierwszy plik .czi
     czi_files = [k for k in os.listdir(reanalysis_dir) if k.endswith('.czi')]
@@ -103,8 +145,8 @@ elif experiment_progress == 'reanalysis_xy':
         print("Found exactly one object after xy-reanalysis")
         
     
-    obj.save_measurement_points(os.path.join(measuring_dir, f"{obj_id}_measurements_points_reanalysis_xy.json"))
-    visualize_points(obj, os.path.join(measuring_dir, f"{obj_id}_found_points_reanalysis_xy.png"))
+    obj.save_measurement_points(os.path.join(measuring_dir, f"{saving_name}_measurements_points_reanalysis_xy.json"))
+    visualize_points(obj, os.path.join(measuring_dir, f"{saving_name}_found_points_reanalysis_xy.png"))
 
     print(f"Finished reanalysis of the object: {obj_id}")
 

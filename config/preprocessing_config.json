@@ -1,4 +1,4 @@
-{"Cellpose":{"analysis_channel":1, "chosen_analysis":"Cellpose_algorhitm", "objects_diameter": 30},
+{"Cellpose":{"analysis_channel":1, "chosen_analysis":"Cellpose_algorithm", "objects_diameter": 40},
   "FLGUV": {"analysis_channel":1, "chosen_analysis": "Circles", "min_size_um": 5, "max_size_um": 50},
   "z_image_analysis": {"analysis_channel":0, "chosen_analysis": "Max_intensity_Z_Scan"},
-"TLGUV": {"analysis_channel":2, "chosen_analysis": "Circles", "min_size_um": 5, "max_size_um": 70, "TL": true}}
+"TLGUV": {"analysis_channel":0, "chosen_analysis": "Circles", "min_size_um": 5, "max_size_um": 70}}
