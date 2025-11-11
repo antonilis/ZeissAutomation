@@ -8,40 +8,49 @@ def log(msg):
         f.write(msg + "\n")
 
 
-conf_path = "D:\\zeiss\\Desktop\\automation\\config\\path_config.json"
 
-with open(conf_path, "r") as file:
-    
-    path_config = json.load(file)
+class PythonAnalysisRunner:
+    def __init__(self, config_path):
+
+        with open(config_path, "r") as f:
+            self.config = json.load(f)
+
+        self.python = self.config["python_exe"]
+        self.script = self.config["python_script"]
+        self.project = self.config["python_project_root"]
 
 
-def run_python_script(args=None, script_path=path_config['python_script'], python_path=path_config['python_exe']):      
-    
+    def _make_args(self, **kwargs):
 
-    proc = Process()
-    proc.StartInfo.FileName = python_path
-    
-    
+        args = []
+        for k, v in kwargs.items():
+            if v is not None:
+                args.append("--{}={}".format(k, v))
+        return args
 
-    proc.StartInfo.WorkingDirectory = path_config['python_project_root']
-    
-    env = proc.StartInfo.EnvironmentVariables
-    env["PYTHONPATH"] = path_config["python_project_root"]                                     
+    def run(self, **kwargs):
+        
+        log("Started run of python!")
+        
+        proc = Process()
+        proc.StartInfo.FileName = self.python
+        proc.StartInfo.WorkingDirectory = self.project
+        proc.StartInfo.UseShellExecute = False
+        proc.StartInfo.RedirectStandardOutput = True
+        proc.StartInfo.RedirectStandardError = True
+        env = proc.StartInfo.EnvironmentVariables
+        env["PYTHONPATH"] = self.project
 
-    arguments = [script_path]
+        args = [self.script] + self._make_args(**kwargs)
+        
+        log("Runner arguments:{}".format(args))
+        
+        proc.StartInfo.Arguments = " ".join(args)
 
-    if args:
-        arguments.extend(args)
+        proc.Start()
+        out = proc.StandardOutput.ReadToEnd()
+        err = proc.StandardError.ReadToEnd()
+        proc.WaitForExit()
 
-    proc.StartInfo.Arguments = " ".join(arguments)
-    proc.StartInfo.UseShellExecute = False
-    proc.StartInfo.RedirectStandardOutput = True
-    proc.StartInfo.RedirectStandardError = True
-
-    proc.Start()
-    output = proc.StandardOutput.ReadToEnd()
-    error = proc.StandardError.ReadToEnd()
-    log(output)
-    log(error)
-
-    proc.WaitForExit()
+        log(out)
+        log(err)

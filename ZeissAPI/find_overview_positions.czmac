@@ -113,12 +113,16 @@ class AcquisitionGrid:
 start_position = get_stage_focus_position()
 
 manual_points = {
-    "start": "G4", 
-    "end": "J11",
-    "shift_x": 4500.0,
+    "start": "K4", 
+    "end": "M15",
+    "shift_x": 4500.0, 
     "shift_y": 4500.0,
     "start_position": start_position,
 }
+
+
+
+# Adams sample: 4500.0, 4500.0
 
 grid_manual = AcquisitionGrid(mode="manual", manual_points=manual_points)
 grid_manual.save_overview_points()

@@ -50,7 +50,11 @@ class Cellpose_algorithm(ImageAnalysisTemplate):
         objects_df = self.image_segmentation(**{k: v for k, v in self.analysis_details.items() if
                                                 k in ["objects_diameter", "circ_thr", "ecc_thr", "sol_thr"]})
 
-        objects_df['radius'] = np.sqrt(objects_df['area'] / np.pi)
+        scaling = self.metadata["scaling_um_per_pixel"]
+        mean_scale = np.mean([scaling["X"] * 10 ** (6), scaling["Y"] * 10 ** (6)])
+
+        objects_df["area"] = objects_df["area"] * (mean_scale ** 2)
+        objects_df["radius"] = np.sqrt(objects_df["area"] / np.pi)
 
         objects_df['position'] = objects_df[['centroid-1', 'centroid-0']].values.tolist()
 
