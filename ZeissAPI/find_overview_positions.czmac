@@ -60,10 +60,9 @@ class AcquisitionGrid:
         
         
     def generate_grid_from_args(self):
-        """Tworzy siatkę punktów na podstawie start/end i przesunięć"""
+
         cfg = self.manual_points
 
-        # Walidacja
         required = ["start", "end", "shift_x", "shift_y", "start_position"]
         for r in required:
             if r not in cfg:
@@ -85,10 +84,10 @@ class AcquisitionGrid:
         base_x, base_y, base_z = cfg["start_position"]
 
         points = []
-        for c_idx, col in enumerate(cols):          # litery -&gt; Y
-            for r_idx, row in enumerate(rows):      # liczby -&gt; X
-                x = base_x + r_idx * shift_x        # liczby przesuwają X
-                y = base_y + c_idx * shift_y        # litery przesuwają Y
+        for c_idx, col in enumerate(cols):
+            for r_idx, row in enumerate(rows):
+                x = base_x + r_idx * shift_x
+                y = base_y + c_idx * shift_y
                 z = base_z
                 name = "{}{}".format(col, row)
                 points.append({
@@ -105,32 +104,71 @@ class AcquisitionGrid:
             json.dump(self.points_for_overview, file, indent=2)
 
 
-# --- Przykłady użycia ---
+############################ GUI generation ##############################################################################
+def getshortfiles(filelist):
+    files_short = []
+    for short in filelist:
+        files_short.append(Path.GetFileNameWithoutExtension(short))
 
-# Tryb eksperymentowy (bez zmian)
-
-
-start_position = get_stage_focus_position()
-
-manual_points = {
-    "start": "K4", 
-    "end": "M15",
-    "shift_x": 4500.0, 
-    "shift_y": 4500.0,
-    "start_position": start_position,
-}
+    return files_short
 
 
+docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
+expfiles = Directory.GetFiles(Path.Combine(docfolder, 'Experiment Setups'), '*.czexp')
+experiments = getshortfiles(expfiles)
 
-# Adams sample: 4500.0, 4500.0
+window = ZenWindow()
+window.Initialize("Create grid for automated acquisition")
+window.Title = "Grig for automated acquisition"
+window.AddCheckbox('reading_mode', 'Do you want to read data points from experiments?', False)
 
-grid_manual = AcquisitionGrid(mode="manual", manual_points=manual_points)
+result_mode = window.Show()
+
+if result_mode.HasCanceled:
+    raise SystemExit
+
+window.ClearContent()
+window.Initialize("Parameters")
+
+if result_mode.GetValue("reading_mode"):
+
+    window.AddDropDown('exp_name', 'Experiments with tiles:', experiments, 0)
+
+else:
+
+    window.AddIntegerRange('shift_x', 'Shift in x [um]:', 1500, 20, 20000)
+    window.AddIntegerRange('shift_y', 'Shift in y [um]:', 1500, 20, 20000)
+    window.AddTextBox('start_point', 'Starting well:', 'A1')
+    window.AddTextBox('end_point', 'Starting well:', 'B2')
+
+result_parameters = window.Show()
+
+if result_mode.HasCanceled:
+    raise SystemExit
+
+
+############################ Actual macro ##############################################################################
+
+if result_mode.GetValue("reading_mode"):
+
+    chosen_mode = "experiment"
+    chosen_manual_points = None
+
+else:
+
+    chosen_mode = "manual"
+    chosen_manual_points = {"start": result_parameters.GetValue("start_point"),
+                            "end": result_parameters.GetValue("end_point"),
+                            "shift_x": result_parameters.GetValue("shift_x"),
+                            "shift_y": result_parameters.GetValue("shift_y"), "start_position":
+                                get_stage_focus_position()}
+
+grid_manual = AcquisitionGrid(mode=chosen_mode, manual_points=chosen_manual_points)
 grid_manual.save_overview_points()
 
 
-  
-  
-  
+
+
 </Text>
   <Author></Author>
   <Description></Description>

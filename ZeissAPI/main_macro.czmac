@@ -1,19 +1,13 @@
-< ?xml
-version = "1.0"
-encoding = "utf-8"? >
-< Script >
-< Context > Zen26 < / Context >
-< Version > 1.0 < / Version >
-< Language > Python < / Language >
-< Text >
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
 import json
 import time
 import uuid
-import importlib
 from System.IO import Directory, Path, File
-
-import execute_python
-import path_manager_main_macro
 
 from execute_python import PythonAnalysisRunner
 from path_manager_main_macro import PathManager
@@ -28,6 +22,7 @@ def log(msg):
 
 
 CONFIG_PATH = r"D:\zeiss\Desktop\automation\config\path_config.json"
+PROCESSING_PATH = r"D:\zeiss\Desktop\automation\config\preprocessing_config.json"
 
 
 ###################### class for API calls ###########################################################
@@ -66,7 +61,7 @@ class ZeissApiProcessor:
         time.sleep(2)
 
     @staticmethod
-    def save_experiment_result(name):
+    def save_experiment_result(name, base_name=None):
         document = Zen.Application.Documents.ActiveDocument
 
         if document is not None:
@@ -77,9 +72,20 @@ class ZeissApiProcessor:
             log(str(files))
 
             for file in files:
-                file_name = Path.GetFileName(file)
+                file_name = Path.GetFileNameWithoutExtension(file)
+                extenion = Path.GetExtension(file)
+                
+                parts = file_name.split("_")
+                
+                if len(parts) > 1:
+                
+                    final_name = "{}_{}{}".format(base_name, "_".join(parts[1:]), extenion)
+                    
+                else:
+                    
+                    final_name = "{}{}".format(base_name, extenion)
 
-                File.Move(file, Path.Combine(name, file_name))
+                File.Move(file, Path.Combine(name, final_name))
 
 
 # ==============================================================================
@@ -189,11 +195,15 @@ class AcquisitionPipeline:
 
             # --- 2 Reanalysis ---
             if self.reanalysis_dict is not None:
-                log("Initialized reanalysis of object: {}".format(obj_id))
-                if self.reanalysis_dict['xy']:
+                log("Initialized reanalysis of object: {}".format(obj_id)) 
+
+                # Reanalysis XY
+                if self.reanalysis_dict.get('xy'):
                     self._perform_reanalysis_xy(obj_id, name)
 
-                if self.reanalysis_dict['z']:
+                # Reanalysis Z
+                z_data = self.reanalysis_dict.get('z')
+                if z_data and (z_data.get('z_experiment') is not None or z_data.get('z_analysis') is not None):
                     self._perform_reanalysis_z(obj_id, name, obj)
 
             for exp_name in self.post_reanalysis_experiments:
@@ -261,15 +271,17 @@ class AcquisitionPipeline:
     def _run_experiment(self, obj_id, exp_item, stage, name=None, obj=None):
 
         if self.adaptive_experiment is not None:
+            
+            adaptive_experiment = eval(self.adaptive_experiment)
+            
+            if adaptive_experiment['experiment'] == exp_item:
+                log('Doing adaptive experiment {}'.format(adaptive_experiment))
 
-            if self.adaptive_experiment['experiment'] == exp_item:
-                log('Doing adaptive experiment {}'.format(self.adaptive_experiment))
-
-                fun = self.adaptive_experiment['function']
+                fun = adaptive_experiment['function']
 
                 fun(exp_item, obj_id, stage, obj, name)
 
-                log('Modified z experiment with {}'.format(self.adaptive_experiment))
+                log('Modified z experiment with {}'.format(adaptive_experiment))
 
         ZeissApiProcessor.load_experiment(exp_item)
         ZeissApiProcessor.execute_current_experiment()
@@ -277,11 +289,13 @@ class AcquisitionPipeline:
         if Zen.Application.Documents.ActiveDocument is None:
 
             file_name = self.path_manager.result_dir(obj_id, stage, name)
+            base_name = Path.GetFileNameWithoutExtension(self.path_manager.result_path(obj_id, stage, exp_item, name))
 
         else:
             file_name = self.path_manager.result_path(obj_id, stage, exp_item, name)
+            base_name = None
 
-        ZeissApiProcessor.save_experiment_result(file_name)
+        ZeissApiProcessor.save_experiment_result(file_name, base_name)
 
         log("Saved the result: {}".format(file_name))
 
@@ -297,7 +311,7 @@ def fcs_zscan(exp_item, obj_id, stage, obj, name):
     actual_position = ZeissApiProcessor.get_stage_focus_position()
     log("I could have move by radius of {}".format(str(obj)))
 
-    modified_position = [actual_position[0], actual_position[1], actual_position[2] + radius]
+    modified_position = [actual_position[0], actual_position[1], actual_position[2]] # For now without radius
 
     exp_obj = Zen.Acquisition.Experiments.GetByName(exp_item)
 
@@ -329,28 +343,190 @@ def fcs_zscan(exp_item, obj_id, stage, obj, name):
     exp_obj.SetActive()
 
 
+################################## Code for generating GUI #######################################
+
+
+with open(PROCESSING_PATH, 'r') as file:
+    preprocessing_data = json.load(file)
+
+
+def getshortfiles(filelist):
+    files_short = []
+    for short in filelist:
+        files_short.append(Path.GetFileNameWithoutExtension(short))
+
+    return files_short
+
+
+docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
+expfiles = Directory.GetFiles(Path.Combine(docfolder, 'Experiment Setups'), '*.czexp')
+experiments = getshortfiles(expfiles)
+
+# === window 1: choosing work modes ===
+window = ZenWindow()
+window.Initialize("Automated Acquisition")
+window.Title = "Automated Acquisition"
+
+window.AddCheckbox('finding_objects_mode', 'Finding objects mode:', True)
+window.AddCheckbox('multiple_overiews', 'Multiple overviews mode:', True)
+
+result_mode = window.Show()
+finding_objects = result_mode.GetValue('finding_objects_mode')
+multiple_overviews = result_mode.GetValue('multiple_overiews')
+
+if result_mode.HasCanceled:
+    raise SystemExit
+
+# === window 2: choosing experiments ===
+window.ClearContent()
+window.Initialize("Automated Acquisition")
+
+if finding_objects:
+    window.AddDropDown('over_exp_name', 'Choose overview experiment:', experiments, 0)
+    window.AddDropDown('over_analysis', 'Choose overview analysis:', preprocessing_data.keys(), 0)
+    window.AddDropDown('vis_exp', 'Choose experiment for object visualization:', experiments, 0)
+    window.AddDropDown('rean_xy_name', 'Choose reanalysis in xy:', ["None"] + preprocessing_data.keys(), 0)
+
+window.AddDropDown('z_exp_name', 'Choose experiment for z-reanalysis:', ["None"] + experiments, 0)
+window.AddDropDown('z_analysis', 'Choose z-reanalysis:', ["None"] + preprocessing_data.keys(), 0)
+window.AddCheckbox('is_FCS', 'Is z analysis experiment a FCS experiments:', True)
+
+default_adaptive = 'None'
+window.AddTextBox('adaptive_experiment', 'Adaptive experiment:', default_adaptive)
+
+result_setup = window.Show()
+
+if result_setup.HasCanceled:
+    raise SystemExit
+
+# === window 3: choosing post-analysis experiments ===
+selected_experiments = []
+done = False
+
+while not done:
+    window = ZenWindow()
+    window.Initialize("Select post-analysis experiments")
+
+    window.AddDropDown('post_exp_name', 'Choose post analysis experiment:', experiments, 0)
+    chosen_text = "\n".join(selected_experiments) if selected_experiments else "None yet"
+    window.AddMultiLineTextBox('chosen_post_exps', 'Currently selected:', chosen_text)
+    window.AddDropDown('action', 'What next?', ['Add another', 'Done', 'Clear all'], 0)
+
+    result_post = window.Show()
+    if not result_post:
+        break  # user clicked Cancel (X)
+
+    action = result_post.GetValue('action')
+    new_exp = result_post.GetValue('post_exp_name')
+
+    if result_post.HasCanceled:
+        done = True
+        raise SystemExit
+
+    if action == 'Add another':
+        if new_exp not in selected_experiments:
+            selected_experiments.append(new_exp)
+    elif action == 'Clear all':
+        selected_experiments = []
+    elif action == 'Done':
+        if new_exp not in selected_experiments:
+            selected_experiments.append(new_exp)
+        done = True
+
+# === window 4: Summarry ===
+window = ZenWindow()
+window.Initialize("Summary of selections")
+
+summary_text = ""
+summary_text += "Finding objects mode: {}\n".format("Enabled" if finding_objects else "Disabled")
+summary_text += "Multiple overviews mode: {}\n".format("Enabled" if multiple_overviews else "Disabled")
+
+if finding_objects:
+    summary_text += "\nOverview experiment: {}\n".format(result_setup.GetValue('over_exp_name'))
+    summar_text = "\nObject visualization experiments: {}\n".format(result_setup.GetValue('vis_exp'))
+    summary_text += "Overview analysis: {}\n".format(result_setup.GetValue('over_analysis'))
+    summary_text += "Reanalysis XY: {}\n".format(result_setup.GetValue('rean_xy_name'))
+    summary_text += "Z experiment: {}\n".format(result_setup.GetValue('z_exp_name'))
+    summary_text += "Z analysis: {}\n".format(result_setup.GetValue('z_analysis'))
+    summary_text += "Is z experiment a FCS?: {}\n".format(result_setup.GetValue('is_FCS'))
+else:
+    summary_text += "\nZ experiment: {}\n".format(result_setup.GetValue('z_exp_name'))
+    summary_text += "Z analysis: {}\n".format(result_setup.GetValue('z_analysis'))
+
+if selected_experiments:
+    summary_text += "\nPost-analysis experiments:\n" + "\n".join(selected_experiments)
+else:
+    summary_text += "\nNo post-analysis experiments selected."
+
+window.AddMultiLineTextBox('summary_box', 'Summary:', summary_text)
+window.Show()
+
 ################################## Actual Macro: #######################################
 
-adaptive = {"experiment": "automation_FCS_zscan", "function": fcs_zscan}
+def none_or_value(x):
+    return None if x == "None" else x
 
-pipeline = AcquisitionPipeline(object_visualization_experiment='automation_image_5x',
-                               reanalysis_dict={'xy': 'Cellpose', 'z': {'z_experiment': 'adam_zscan_fast',
-                                                                        'z_analysis': 'z_image_analysis',
-                                                                        'is_FCS': False}},
-                               post_reanalysis_experiments=['automation_image_5x', 'RICS'],
-                               adaptive_experiment=adaptive
-                               )
 
-for point in pipeline.points_for_overview:
-    ZeissApiProcessor.move(point['position'])
+finding_objects = result_mode.GetValue('finding_objects_mode')
+multiple_overviews = result_mode.GetValue('multiple_overiews')
 
-    pipeline.acquire_overview(overview_experiment="automation_imaging", analysis_args='Cellpose', name=point['name'])
-    pipeline.capture_objects(name=point['name'])
+if finding_objects:
 
-< / Text >
-< Author > < / Author >
-< Description > < / Description >
-< Keywords > < / Keywords >
-< Row > 80 < / Row >
-< Column > 12 < / Column >
-< / Script >
+    pipeline = AcquisitionPipeline(object_visualization_experiment=result_setup.GetValue('vis_exp'),
+                                   reanalysis_dict={'xy': none_or_value(result_setup.GetValue('over_analysis')),
+                                                    'z': {'z_experiment': none_or_value(result_setup.GetValue('z_exp_name')),
+                                                          'z_analysis': none_or_value(result_setup.GetValue('z_analysis')),
+                                                          'is_FCS': result_setup.GetValue('is_FCS')}},
+                                   post_reanalysis_experiments=selected_experiments,
+                                   adaptive_experiment=none_or_value(result_setup.GetValue('adaptive_experiment'))
+                                   )
+
+    if multiple_overviews:
+        for point in pipeline.points_for_overview:
+            ZeissApiProcessor.move(point['position'])
+
+            pipeline.acquire_overview(overview_experiment=result_setup.GetValue('over_exp_name'),
+                                      analysis_args=result_setup.GetValue('over_analysis'), name=point['name'])
+            pipeline.capture_objects(name=point['name'])
+
+    else:
+        pipeline.acquire_overview(overview_experiment=result_setup.GetValue('over_exp_name'),
+                                  analysis_args=result_setup.GetValue('over_analysis'), name=None)
+        pipeline.capture_objects(name=None)
+
+else:
+    pipeline = AcquisitionPipeline(
+        reanalysis_dict={'z': {'z_experiment':none_or_value(result_setup.GetValue('z_exp_name')),
+                               'z_analysis': none_or_value(result_setup.GetValue('z_analysis')),
+                               'is_FCS': result_setup.GetValue('is_FCS')}},
+    )
+    if multiple_overviews:
+
+        for point in pipeline.points_for_overview:
+
+            ZeissApiProcessor.move(point['position'])
+
+            pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id, name=point['name'])
+
+            for experiment in selected_experiments:
+                pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post',
+                                         name=point['name'], obj=None)
+
+            Zen.Appplication.Documents.RemoveAll()
+
+    else:
+
+        pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id)
+
+        for experiment in selected_experiments:
+            pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post')
+
+        Zen.Appplication.Documents.RemoveAll() #
+
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>80</Row>
+  <Column>12</Column>
+</Script>

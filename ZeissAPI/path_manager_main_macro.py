@@ -102,14 +102,11 @@ class PathManager:
 
     
         newest_fcs = fcs_files[0]
-        #newest_raw = raw_files[0]
-
 
         fcs_name = Path.GetFileNameWithoutExtension(newest_fcs)
      
     
         matching_raws = [r for r in raw_files if Path.GetFileName(r).startswith(fcs_name)]
-        #matching_raws_excl_newest = [r for r in matching_raws if r != newest_raw]
 
         log("Znaleziono {} RAW z tym UUID.".format(len(matching_raws)))
 
