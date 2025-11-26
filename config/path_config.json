@@ -1,7 +1,7 @@
-{"python_exe" : "D:\\zeiss\\Desktop\\automation\\venv\\Scripts\\python.exe",
-  "python_script" : "D:\\zeiss\\Desktop\\automation\\data_processing\\main_processor.py",
-  "measuring_points_path": "D:\\zeiss\\Desktop\\automation\\temp\\",
-  "results_path":"D:\\zeiss\\Desktop\\automation\\results\\",
-"image_for_analysis_path" : "D:\\zeiss\\Desktop\\automation\\image_for_analysis\\",
-"python_project_root": "D:\\zeiss\\Desktop\\automation\\",
+{"python_exe" : "D:\\automation\\venv\\Scripts\\python.exe",
+  "python_script" : "D:\\automation\\data_processing\\main_processor.py",
+  "measuring_points_path": "D:\\automation\\temp\\",
+  "results_path":"D:\\automation\\results\\",
+"image_for_analysis_path" : "D:\\automation\\image_for_analysis\\",
+"python_project_root": "D:\\automation\\",
 "zeiss_temp_file": "D:\\zeiss\\Pictures\\"}

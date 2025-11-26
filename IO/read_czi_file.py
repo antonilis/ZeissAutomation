@@ -9,7 +9,9 @@ class CziFileReader:
 
         self.path = path
         self.analysis_channel = analysis_channel
+
         self.czi_file, self.metadata = self.read_czi_file(path)
+
 
     def read_czi_file(self, path):
 
@@ -28,6 +30,7 @@ class CziFileReader:
         metadata["channels"] = self._extract_channels(root)
         metadata["stage_position"] = self._extract_positions(root)[0]
         metadata['z_scan'] = self._extract_z_scan_informations(root)
+        metadata['tiles'] = self._extract_tiles_informations(root)
 
         return metadata
 
@@ -118,13 +121,38 @@ class CziFileReader:
         else:
             return None
 
+    def _extract_tiles_informations(self, root):
+        positions = []
+        for elem in root.iter():
+            if elem.tag.endswith("SingleTileRegion"):
+                name = elem.get("Name")
+
+                def get_float(tag):
+                    for child in elem:
+                        if child.tag.endswith(tag) and child.text:
+                            try:
+                                return float(child.text)
+                            except ValueError:
+                                return None
+                    return None
+
+                positions.append({
+                    "name": name,
+                    "x": get_float("X"),
+                    "y": get_float("Y"),
+                    "z": get_float("Z")
+                })
+
+        return positions
 
     def get_image_to_analyze(self, czidoc, analysis_channel):
         # pobieramy bounding box i listę dostępnych wymiarów
+
         bbox = czidoc.total_bounding_box
         available_dims = list(bbox.keys())
 
         z_size = bbox['Z'][1] - bbox['Z'][0]
+
 
         if z_size > 1:
             z_stack = []
@@ -152,11 +180,47 @@ class CziFileReader:
                 if dim in ['C', 'Z', 'T', 'H', 'S', 'B']:
                     if dim == 'C':
                         plane['C'] = analysis_channel
-                    # elif dim == 'Z':
-                    #     plane['Z'] = 0  # domyślna warstwa Z
                     else:
                         plane[dim] = 0
 
+            if len(czidoc.scenes_bounding_rectangle_no_pyramid) > 1:
+
+                scene_stack = []
+
+                for i in range(len(czidoc.scenes_bounding_rectangle_no_pyramid)):
+
+                    img = czidoc.read(scene=i, plane=plane)
+                    img_array = np.squeeze(np.array(img))
+                    scene_stack.append(img_array)
+
+                scene_stack = np.stack(scene_stack, axis=0)
+
+                return scene_stack
+
             img = czidoc.read(plane=plane)
             img_array = np.squeeze(np.array(img))
+
+
             return img_array
+
+
+if __name__ == '__main__':
+
+    path = '../positions_image.czi'
+
+    czi_obj = CziFileReader(path,  analysis_channel=0)
+
+    tiles = czi_obj.metadata['tiles']
+    index_found = 2
+    wanted_image = None
+    for image in tiles:
+        point_index = int(image['name'][-1])
+
+        if index_found == point_index:
+            wanted_image = image
+
+
+
+
+
+

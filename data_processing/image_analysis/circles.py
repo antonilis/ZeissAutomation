@@ -4,7 +4,7 @@ import numpy as np
 
 from data_processing.image_analysis.base_image_analyzer import ImageAnalysisTemplate
 from data_processing.image_analysis.analysis_registry import register_class
-
+from data_processing.image_analysis.pixel_stage_converter import z_normal
 
 
 @register_class
@@ -62,7 +62,6 @@ class Circles(ImageAnalysisTemplate):
                 # area ratio
                 fit_ratio = cnt_area / circle_area if circle_area > 0 else 0
 
-
                 if fit_ratio >= min_fit_ratio:
                     results[idx] = {"center": (cx, cy), "radius": int(radius), "fit ratio": fit_ratio}
 
@@ -108,8 +107,13 @@ class Circles(ImageAnalysisTemplate):
 
         classified_external = self._classify_contours_by_area(found_contours, hierarchy)
 
-        center_radius_dict = self.get_contour_centers_and_radii(classified_external, self.analysis_details.get('min_fit_ratio', 0.2))
+        center_radius_dict = self.get_contour_centers_and_radii(classified_external,
+                                                                self.analysis_details.get('min_fit_ratio', 0.2))
 
-        measurement_point = self.filter_by_size(center_radius_dict, **{k: v for k, v in self.analysis_details.items() if k in ["min_size_um", "max_size_um"]})
+        measurement_point = self.filter_by_size(center_radius_dict, **{k: v for k, v in self.analysis_details.items() if
+                                                                       k in ["min_size_um", "max_size_um"]})
 
-        return measurement_point
+        transformed_points = self.pixel_converter.convert_points(measurement_point, xy_mode='normal',
+                                                                 z_strategy=z_normal)
+
+        return measurement_point, transformed_points

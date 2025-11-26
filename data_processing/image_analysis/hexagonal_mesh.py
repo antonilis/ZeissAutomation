@@ -8,6 +8,7 @@ import cv2
 
 from data_processing.image_analysis.base_image_analyzer import ImageAnalysisTemplate
 from data_processing.image_analysis.analysis_registry import register_class
+from data_processing.image_analysis.pixel_stage_converter import z_normal
 
 
 
@@ -138,5 +139,9 @@ class HexagonalMesh(ImageAnalysisTemplate):
                     "position": pos,
                     "type": point_type
                 })
+
+
+        transformed_points = self.pixel_converter.convert_points(measurement_points, xy_mode='normal',
+                                                                 z_strategy=z_normal)
 
         return measurement_points

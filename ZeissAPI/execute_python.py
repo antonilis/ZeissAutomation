@@ -3,7 +3,7 @@ import json
 
 
 def log(msg):
-    path = "D:\\zeiss\\Desktop\\zen_log.txt"
+    path = "D:\\Automation\\zen_log.txt"
     with open(path, "a") as f:
         f.write(msg + "\n")
 

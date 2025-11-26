@@ -23,7 +23,6 @@ class ZeissImageProcessor:
         self.image_analyzer = self.get_analysis_type(chosen_analysis, **analysis_details)
         self.measurement_points, self.not_scaled_points = self.get_measurement_points()
 
-
     def get_analysis_type(self, chosen_analysis, **kwargs):
 
         strategy_class = get_image_analysis_type(chosen_analysis)
@@ -36,46 +35,9 @@ class ZeissImageProcessor:
             metadata=self.metadata, **kwargs)
 
     def get_measurement_points(self):
-        points = self.image_analyzer.get_measurement_points()
-        points_table_coordinates = (
-            self.pixel_positions_to_stage_positions(points)
-            if points is not None else None
-        )
-        return points_table_coordinates, points
+        points, measurement_points = self.image_analyzer.get_measurement_points()
 
-    def pixel_positions_to_stage_positions(self, points_list):
-
-        if len(self.image_to_analyze.shape) == 2:
-            height, width = self.image_to_analyze.shape
-        elif len(self.image_to_analyze.shape) == 3:
-            z_size, height, width = self.image_to_analyze.shape
-
-        else:
-            raise ValueError(f"Unexpected image shape: {self.image_to_analyze}")
-
-        stage_pos = self.metadata.get("stage_position")
-        scaling = self.metadata["scaling_um_per_pixel"]
-
-        transformed_points = copy.deepcopy(points_list)
-        for point in transformed_points:
-            px = np.array(point["position"], dtype=float)
-
-            x_um = stage_pos["x"] + (px[0] - height / 2 + 0.5) * scaling["X"] * 10 ** 6
-            y_um = stage_pos["y"] + (px[1] - height / 2 + 0.5) * scaling["Y"] * 10 ** 6
-
-            if len(px) == 2:
-                z_um = np.full_like(x_um, stage_pos["z"], dtype=float)
-            elif len(px) == 3:
-                z_um = stage_pos['z'] + px[2] * scaling['Z'] * 10 ** 6
-            else:
-                raise ValueError(f"Unexpected point length: {self.image_to_analyze}")
-
-            point["position"] = np.column_stack((x_um, y_um, z_um))[0].tolist()
-        return transformed_points
-
-
-
-
+        return measurement_points, points
 
 
     def save_measurement_points(self, filename):
@@ -101,15 +63,15 @@ if __name__ == '__main__':
         return directions
 
 
-    main_path = '../../result_processing/data/2025.10.01/image_for_analysis'
+    main_path = '../../Snap-10242.czi'
 
-    main_directions = choose_chi_files(main_path)
+    #main_directions = choose_chi_files(main_path)
 
     with open('../../config/preprocessing_config.json', 'r') as file:
         preprocessing_config = json.load(file)
 
     details = preprocessing_config['FLGUV']
 
-    obj_main = ZeissImageProcessor(main_directions[11], **details)
+    obj_main = ZeissImageProcessor(main_path, **details)
     #
     obj_main.save_measurement_points('measurement_points_FL.json')
