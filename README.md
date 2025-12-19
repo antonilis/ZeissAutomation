@@ -1,6 +1,6 @@
 # Automated Confocal Microscopy Pipeline
 
-📖 **Full documentation:** https://your-project.readthedocs.io
+📖 **Full documentation:** [ZeissAutomation docs](https://zeissautomation.readthedocs.io/en/latest/zeissapi.html)
 
 ## Overview
 
