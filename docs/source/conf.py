@@ -7,15 +7,15 @@ sys.path.insert(0, os.path.abspath('../../'))  # ścieżka do katalogu główneg
 # -- Project information -----------------------------------------------------
 
 project = 'ZeissAutomation'
-author = 'Your Name'
+author = 'Antoni Lis'
 release = '0.1'
 
 # -- General configuration ---------------------------------------------------
 
 extensions = [
-    'sphinx.ext.autodoc',     # generuje dokumentację z docstringów
-    'sphinx.ext.napoleon',    # obsługuje docstringi Google/NumPy
-    'sphinx.ext.viewcode',    # dodaje linki do źródła kodu
+    'sphinx.ext.autodoc',    
+    'sphinx.ext.napoleon',    
+    'sphinx.ext.viewcode',    
 ]
 
 templates_path = ['_templates']
@@ -23,7 +23,7 @@ exclude_patterns = []
 
 # -- Options for HTML output -------------------------------------------------
 
-html_theme = 'sphinx_rtd_theme'  # popularny theme dla Read the Docs
+html_theme = 'alabaster'  # default, not necesseary the best visually
 html_static_path = ['_static']
 
 # -- Options for autodoc -----------------------------------------------------
