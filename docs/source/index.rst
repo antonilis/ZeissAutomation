@@ -6,8 +6,8 @@ ZeissAutomation
    :caption: Contents:
 
    overview
-   io
    zeissapi
    config
    data_preprocessing
    utils
+   modules
