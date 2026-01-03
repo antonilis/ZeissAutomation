@@ -1,8 +1,9 @@
-# conf.py
-
 import os
 import sys
-sys.path.insert(0, os.path.abspath('../../'))  # ścieżka do katalogu głównego projektu
+import sphinx_rtd_theme
+
+
+sys.path.insert(0, os.path.abspath('../../'))  # path to the main directory
 
 # -- Project information -----------------------------------------------------
 
@@ -21,10 +22,17 @@ exclude_patterns = []
 
 # -- Options for HTML output -------------------------------------------------
 
-html_theme = 'alabaster'  # default, not necesseary the best visually
-html_static_path = ['_static']
+html_theme = 'sphinx_rtd_theme'
+html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
+
+html_theme_options = {
+    'navigation_depth': 4,
+    'collapse_navigation': False,
+    'sticky_navigation': True,
+    'titles_only': False
+}
 
 # -- Options for autodoc -----------------------------------------------------
 
-autodoc_member_order = 'bysource'  # porządek według kolejności w kodzie
+autodoc_member_order = 'bysource'
 autodoc_default_flags = ['members', 'undoc-members', 'show-inheritance']
