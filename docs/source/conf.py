@@ -14,7 +14,9 @@ release = '0.1'
 # -- General configuration ---------------------------------------------------
 
 extensions = [
-    'sphinx.ext.viewcode',    
+    'sphinx.ext.viewcode',
+    'sphinx.ext.napoleon',
+    'sphinx.ext.viewcode'
 ]
 
 templates_path = ['_templates']

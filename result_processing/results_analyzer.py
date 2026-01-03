@@ -8,7 +8,9 @@ from utils import visualize_points
 
 
 class ZeissResultProcessor:
-
+    """
+    Work-in-progress class; partially implemented, to be extended later
+    """
     def __init__(self, path):
 
         self.stage_position_record = self.initialize_stage_record(path)
