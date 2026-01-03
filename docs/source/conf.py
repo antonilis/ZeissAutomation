@@ -27,11 +27,54 @@ release = '0.1'
 # -- General configuration ---------------------------------------------------
 
 extensions = [
-    'sphinx.ext.viewcode',
+    'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
-    'sphinx.ext.viewcode'
+    'sphinx.ext.viewcode',
 ]
+autodoc_mock_imports = [
+    # core scientific
+    "numpy",
+    "scipy",
+    "pandas",
+    "numba",
+    "sympy",
+    "mpmath",
 
+    # imaging / vision
+    "cv2",
+    "opencv_python",
+    "opencv_python_headless",
+    "skimage",
+    "scikit_image",
+    "imageio",
+    "imagecodecs",
+    "tifffile",
+    "roifile",
+    "czifile",
+    "pylibCZIrw",
+    "aicspylibczi",
+    "fastremap",
+    "cellpose",
+
+    # plotting
+    "matplotlib",
+    "contourpy",
+    "cycler",
+    "fonttools",
+    "kiwisolver",
+
+    # ML
+    "torch",
+    "llvmlite",
+
+    # misc heavy / irrelevant
+    "cmake",
+    "networkx",
+    "validators",
+    "xmltodict",
+    "fsspec",
+    "lazy_loader",
+]
 templates_path = ['_templates']
 exclude_patterns = []
 
@@ -50,4 +93,8 @@ html_theme_options = {
 # -- Options for autodoc -----------------------------------------------------
 
 autodoc_member_order = 'bysource'
-autodoc_default_flags = ['members', 'undoc-members', 'show-inheritance']
+autodoc_default_options = {
+    'members': True,
+    'undoc-members': True,
+    'show-inheritance': True,
+}
