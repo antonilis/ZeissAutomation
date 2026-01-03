@@ -9,16 +9,17 @@ from data_processing.image_analysis.pixel_stage_converter import z_normal
 
 @register_class
 class Circles(ImageAnalysisTemplate):
+
+    """
+    Class for detecting circular objects using Otsu thresholding
+    and contour-based shape analysis.
+    """
+
     @staticmethod
     def _classify_contours_by_area(contours, hierarchy, top_n=None):
         """
-        Finds external contours and their internal contours, sorted by area in descending order.
-        Args:
-            contours (list): List of contours.
-            hierarchy (numpy.ndarray): Contour hierarchy information.
-            top_n (int, optional): Number of top external contours to return. If None, returns all.
-        Returns:
-            list: Tuples of (external_contour, internal_contours_list) sorted by external contour area.
+        Classify external contours by area and return them sorted in descending order.
+        :return: list of external contours sorted by area
         """
         # Map parent indices to their child contours
         parent_children_map = defaultdict(list)
@@ -45,8 +46,9 @@ class Circles(ImageAnalysisTemplate):
     @staticmethod
     def get_contour_centers_and_radii(contours, min_fit_ratio):
         """
-        Returns a dictionary mapping contour indices to dicts {center: (cx, cy), radius: r}
-        Only keeps contours that are reasonably circular.
+        Compute centers and radii of contours fitting a circular shape.
+        :return: dictionary mapping contour indices to center position, radius,
+                 and fit ratio in pixel coordinates
         """
         results = {}
         for idx, cnt in enumerate(contours):
@@ -68,6 +70,11 @@ class Circles(ImageAnalysisTemplate):
         return results
 
     def filter_by_size(self, GUVs_dict, min_size_um=1, max_size_um=50):
+        """
+        Filter detected objects by size range in micrometers.
+        :return: list of dictionaries with object positions in pixel coordinates
+                 and radii in micrometers
+        """
         scale = np.mean([
             self.metadata['scaling_um_per_pixel']['X'],
             self.metadata['scaling_um_per_pixel']['Y']
@@ -85,11 +92,18 @@ class Circles(ImageAnalysisTemplate):
         return filtered
 
     def get_measurement_points(self):
+        """
+        Detect circular objects, filter them by size, and convert their positions
+        to stage coordinates.
+        :return: lists of dictionaries with the founded objects properties and their positions
+                 in the pixels coordinates and in the stage coordinates in um
+        """
 
         normalized = cv2.normalize(self.image, None, 0, 255, cv2.NORM_MINMAX)
 
         blurred = cv2.GaussianBlur(normalized, (3, 3), 0)
 
+        # Canny algorhitm when circles on TL and findContours for FL
         if 'TL' not in self.analysis_details.keys():
             otsu_threshold, thresholded = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             kernel = np.ones((3, 3), np.uint8)

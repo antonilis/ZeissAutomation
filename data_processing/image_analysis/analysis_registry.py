@@ -1,3 +1,8 @@
+"""
+The dictionary with the name of the algorithms available in this folder.
+"""
+
+
 _REGISTRY = {}
 
 def register_class(cls):

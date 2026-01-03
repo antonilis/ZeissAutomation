@@ -11,21 +11,39 @@ from data_processing.image_analysis.pixel_stage_converter import z_normal
 
 @register_class
 class Cellpose_algorithm(ImageAnalysisTemplate):
-
+    """
+    Class utilizing the Cellpose 3.0 algorithm for finding the objects on transmitted light and filter them by
+    circularity, solidity and eccentricity.
+    """
     @staticmethod
     def filter_cellpose_masks(df, circ_thr=0.65, ecc_thr=0.5, sol_thr=0.85):
-        # Obliczanie circularity
+        """
+        Function for the filtration of the founded objects.
+        :param df: pandas DF with the founded objects.
+        :param circ_thr: float minimal circularity filtering threshold
+        :param ecc_thr: float maximal eccentricity filtering threshold
+        :param sol_thr: float maximal solidity filtering threshold
+        :return: filtered pandas df
+        """
+
         df['circularity'] = 4 * np.pi * df['area'] / (df['perimeter'] ** 2)
         
        
         mask = ((df['circularity'] > circ_thr) & (df['solidity'] > sol_thr) &(df['eccentricity'] < ecc_thr))
         
-        # Filtracja wierszy
         df_filtered = df.loc[mask].copy()
 
         return df_filtered
 
     def image_segmentation(self, objects_diameter=None, circ_thr=0.65, ecc_thr=0.5, sol_thr=0.85):
+        """
+        Initializing Cellpose algorithm.
+        :param objects_diameter: float size in um, passed to Cellpose model eval
+        :param circ_thr: float minimal circularity filtering threshold
+        :param ecc_thr: float maximal eccentricity filtering threshold
+        :param sol_thr: float maximal solidity filtering threshold
+        :return: pandas df with objects center positions and their properties
+        """
         model = models.Cellpose(model_type='cyto', gpu=True)
 
         scaling = self.metadata["scaling_um_per_pixel"]
@@ -48,6 +66,11 @@ class Cellpose_algorithm(ImageAnalysisTemplate):
         return filtered_props_table
 
     def get_measurement_points(self):
+        """
+        Utilizes methods above for image segmentation and obtains o
+        :return: lists of dictionaries with the founded objects properties and their positions in the pixels coordinates
+        and in the stage coordinates in um.
+        """
         objects_df = self.image_segmentation(**{k: v for k, v in self.analysis_details.items() if
                                                 k in ["objects_diameter", "circ_thr", "ecc_thr", "sol_thr"]})
 

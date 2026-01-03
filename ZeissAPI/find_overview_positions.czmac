@@ -10,30 +10,48 @@ from execute_python import log
 
 
 def get_stage_focus_position():
+    """
+    API call for obtaining the current position of the stage
+    :return: list of the x,y,z coordinates of the stage position
+    """
     x = Zen.Devices.Stage.ActualPositionX
     y = Zen.Devices.Stage.ActualPositionY
     z = Zen.Devices.Focus.ActualPosition
 
     return [x, y, z]
 
+
 class AcquisitionGrid:
+    """
+    Class for the fast generation of the points on which one will perform the full pipeline
+    of automated processes
+    """
+
     CONFIG_PATH = r"D:\zeiss\Desktop\automation\config\path_config.json"
 
     def __init__(
-        self, 
-        experiment_name="AI_sample_finder", 
-        mode="experiment",  # 'experiment' or 'manual'
-        manual_points=None  # lista punktów, jeśli mode == 'manual' dict. 
+            self,
+
+            # 'available modes are: experiment' or 'manual', experiment mode reads the points from the centers of the tiles, manual generates the points by
+            # specifying the shifts in x, y and start/end position).
+            mode="experiment",
+
+            experiment_name="AI_sample_finder",  # works in experiment mode: name of the .czexp file to read points from
+            manual_points=None
+            # dictionairy with the keys: "start", "end", "shift_x", "shift_y", "start_position", where start and end are in the convention of the plate,
+            # while start_position is a real stage position in um of the start.
+            # For example start=A1, end=C4. The grid is then generated where A1 is the top-left corner and C4 is bottom right. The distances between wells are calculated
+            # from the shifts and starting_position
     ):
         self.experiment_name = experiment_name
         self.mode = mode
         self.manual_points = manual_points or []
 
         self.config = self.read_json(self.CONFIG_PATH)
-        self.results_path = self.config["results_path"]
-        self.measuring_points_path = self.config["measuring_points_path"]
+        self.measuring_points_path = self.config[
+            "measuring_points_path"]  # required for savings points in the directory compatible with automation pipeline
 
-        # wybierz odpowiedni sposób generowania punktów
+        # Choosing the method suitable mode of the points generation
         if self.mode == "experiment":
             self.points_for_overview = self.calculate_points_for_overview()
         elif self.mode == "manual":
@@ -47,6 +65,13 @@ class AcquisitionGrid:
             return json.load(file)
 
     def calculate_points_for_overview(self):
+        """
+        Reads the centers of the tiles from the .czexp file name
+        return:
+        list[dict]: List of points with keys:
+            - "name": grid label (e.g. "A1")
+            - "position": [x, y, z] coordinates
+        """
         exp = Zen.Acquisition.Experiments.GetByName(self.experiment_name)
         tile_region_objects = exp.GetTileRegionInfos(0)
 
@@ -57,9 +82,19 @@ class AcquisitionGrid:
                 "name": tile.Name,
             })
         return points_for_overview
-        
-        
+
     def generate_grid_from_args(self):
+        """
+        Generates a regular grid of 3D points based on manual configuration.
+        The grid is defined using plate-like labels (e.g. A1 to C3),
+        a starting position in 3D space, and constant shifts in X and Y
+        directions. Each generated point has a unique name (e.g. "B2")
+        and a fixed Z coordinate taken from the start position.
+
+        return: list[dict]: List of points with keys:
+                - "name": grid label (e.g. "A1")
+                - "position": [x, y, z] coordinates
+        """
 
         cfg = self.manual_points
 
@@ -71,11 +106,10 @@ class AcquisitionGrid:
         start_label = cfg["start"].upper()
         end_label = cfg["end"].upper()
 
-        # Konwersja np. "A1" -&gt; ('A', 1)
+        # conversion from example: "A1" -&gt; ('A', 1)
         start_col, start_row = start_label[0], int(start_label[1:])
         end_col, end_row = end_label[0], int(end_label[1:])
 
-        # Liczba kolumn i wierszy
         cols = [chr(c) for c in range(ord(start_col), ord(end_col) + 1)]
         rows = list(range(start_row, end_row + 1))
 
@@ -106,6 +140,11 @@ class AcquisitionGrid:
 
 ############################ GUI generation ##############################################################################
 def getshortfiles(filelist):
+    """
+    Gives the name of the files, without theirs extension.
+    :param filelist: list of the file names
+    :return: list of the same file names but without extension
+    """
     files_short = []
     for short in filelist:
         files_short.append(Path.GetFileNameWithoutExtension(short))
@@ -113,6 +152,7 @@ def getshortfiles(filelist):
     return files_short
 
 
+# Getting the names of the availables .czexp files
 docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
 expfiles = Directory.GetFiles(Path.Combine(docfolder, 'Experiment Setups'), '*.czexp')
 experiments = getshortfiles(expfiles)
@@ -146,13 +186,13 @@ result_parameters = window.Show()
 if result_mode.HasCanceled:
     raise SystemExit
 
-
-############################ Actual macro ##############################################################################
+############################ Initialization of the code above ##############################################################################
 
 if result_mode.GetValue("reading_mode"):
 
     chosen_mode = "experiment"
     chosen_manual_points = None
+    chosen_experiment = result_parameters.GetValue('exp_name')
 
 else:
 
@@ -162,12 +202,10 @@ else:
                             "shift_x": result_parameters.GetValue("shift_x"),
                             "shift_y": result_parameters.GetValue("shift_y"), "start_position":
                                 get_stage_focus_position()}
+    chosen_experiment = None
 
-grid_manual = AcquisitionGrid(mode=chosen_mode, manual_points=chosen_manual_points)
+grid_manual = AcquisitionGrid(mode=chosen_mode, experiment_name=chosen_experiment, manual_points=chosen_manual_points)
 grid_manual.save_overview_points()
-
-
-
 
 </Text>
   <Author></Author>

@@ -4,6 +4,9 @@ import numpy as np
 
 
 class CziFileReader:
+    """
+    Class for reading a CZI file and extracting image data and metadata for analysis.
+    """
 
     def __init__(self, path, analysis_channel):
 
@@ -12,8 +15,11 @@ class CziFileReader:
 
         self.czi_file, self.metadata = self.read_czi_file(path)
 
-
     def read_czi_file(self, path):
+        """
+        Open CZI file, extract metadata and image data for the chosen channel.
+        :return: tuple (image_data as ndarray, metadata as dict)
+        """
 
         with pyczi.open_czi(path) as czidoc:
             metadata = self.extract_metadata(czidoc.raw_metadata)
@@ -22,6 +28,10 @@ class CziFileReader:
         return image_data, metadata
 
     def extract_metadata(self, metadata_str):
+        """
+        Parse CZI metadata string into structured dictionary.
+        :return: dict with scaling, channels, stage position, z_scan, and tiles info
+        """
 
         root = ET.fromstring(metadata_str)
 
@@ -35,6 +45,10 @@ class CziFileReader:
         return metadata
 
     def _extract_scaling(self, root):
+        """
+        Extract scaling in micrometers per pixel for each axis.
+        :return: dict {axis: scaling in um/pixel}
+        """
         scaling = {}
         for dist in root.findall(".//{*}Distance"):
             axis = dist.attrib.get("Id")
@@ -44,6 +58,10 @@ class CziFileReader:
         return scaling
 
     def _extract_channels(self, root):
+        """
+        Extract channel information including emission and excitation wavelengths.
+        :return: list of dicts with channel id, name, emission_nm, excitation_nm
+        """
         channels = []
         for ch in root.findall(".//{*}Channel"):
             ch_id = ch.attrib.get("Id")
@@ -59,7 +77,10 @@ class CziFileReader:
         return channels
 
     def _extract_positions(self, root):
-
+        """
+        Extract stage positions from Scenes and ParameterCollection.
+        :return: list of dicts with keys x, y, z (float or None)
+        """
         positions = []
 
         # --- 1. Standardowe pozycje w Scenes/Positions ---
@@ -93,6 +114,10 @@ class CziFileReader:
         return positions
 
     def _extract_z_scan_informations(self, root):
+        """
+        Extract Z-stack scan settings: activated, center mode, interval kept.
+        :return: dict with keys is_activated, is_center_mode, is_interval_kept
+        """
 
         z_scan_info = {
             'is_activated': False,
@@ -122,6 +147,10 @@ class CziFileReader:
             return None
 
     def _extract_tiles_informations(self, root):
+        """
+        Extract tile positions and names from the CZI metadata.
+        :return: list of dicts with keys name, x, y, z
+        """
         positions = []
         for elem in root.iter():
             if elem.tag.endswith("SingleTileRegion"):
@@ -146,13 +175,15 @@ class CziFileReader:
         return positions
 
     def get_image_to_analyze(self, czidoc, analysis_channel):
-        # pobieramy bounding box i listę dostępnych wymiarów
+        """
+        Extract image data for the chosen channel as ndarray, handling Z-stack and scenes.
+        :return: ndarray of image data (Z, H, W) or (H, W) depending on file
+        """
 
         bbox = czidoc.total_bounding_box
         available_dims = list(bbox.keys())
 
         z_size = bbox['Z'][1] - bbox['Z'][0]
-
 
         if z_size > 1:
             z_stack = []
@@ -188,7 +219,6 @@ class CziFileReader:
                 scene_stack = []
 
                 for i in range(len(czidoc.scenes_bounding_rectangle_no_pyramid)):
-
                     img = czidoc.read(scene=i, plane=plane)
                     img_array = np.squeeze(np.array(img))
                     scene_stack.append(img_array)
@@ -200,7 +230,6 @@ class CziFileReader:
             img = czidoc.read(plane=plane)
             img_array = np.squeeze(np.array(img))
 
-
             return img_array
 
 
@@ -208,7 +237,7 @@ if __name__ == '__main__':
 
     path = '../positions_image.czi'
 
-    czi_obj = CziFileReader(path,  analysis_channel=0)
+    czi_obj = CziFileReader(path, analysis_channel=0)
 
     tiles = czi_obj.metadata['tiles']
     index_found = 2
@@ -218,9 +247,3 @@ if __name__ == '__main__':
 
         if index_found == point_index:
             wanted_image = image
-
-
-
-
-
-

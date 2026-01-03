@@ -12,7 +12,13 @@ from data_processing.image_analysis.analysis_registry import get_image_analysis_
 
 
 class ZeissImageProcessor:
+    """
+    Processes Zeiss .czi files, by reading them, calling for the segmentation algorithm from image_analysis and saving
+    the results as JSON files.
+    """
     def __init__(self, czi_file_path, analysis_channel=1, chosen_analysis='FluorescentGUV', **analysis_details):
+
+        # reading the image and metadata from .czi file with the CziFileReader and choosing the channel for analysis
         self.czi_file_path = czi_file_path
         self.analysis_channel = analysis_channel
 
@@ -20,11 +26,17 @@ class ZeissImageProcessor:
         self.image_to_analyze = czi_obj.czi_file
         self.metadata = czi_obj.metadata
 
+        # calling for the segmentation algorithm and initializing it
         self.image_analyzer = self.get_analysis_type(chosen_analysis, **analysis_details)
         self.measurement_points, self.not_scaled_points = self.get_measurement_points()
 
     def get_analysis_type(self, chosen_analysis, **kwargs):
-
+        """
+        Method for initialization of the segmentation algorithm
+        :param chosen_analysis: name of the class in image_analysis folder for segmentation
+        :param kwargs: additional arguments for the analyzing script like:
+        :return: initialized object of the segmentation class
+        """
         strategy_class = get_image_analysis_type(chosen_analysis)
         if not strategy_class:
             raise ValueError(
@@ -35,18 +47,28 @@ class ZeissImageProcessor:
             metadata=self.metadata, **kwargs)
 
     def get_measurement_points(self):
+        """
+        Initializes the image segmentation in the chosen algorhitm.
+        :return: list of dictionaries with positions and properties of segmented objects
+        """
+        # returns both the positions in the coordinates of the image pixels and real positions in stage coordinated
         points, measurement_points = self.image_analyzer.get_measurement_points()
 
         return measurement_points, points
 
 
     def save_measurement_points(self, filename):
-
+        """
+        Function responsible for saving the positions and properties of the found objects in the stage coordinates in
+        the JSON file.
+        :param filename: saving path of the JSON file
+        :return: None
+        """
         data = {}
 
         for p in self.measurement_points:
             point_id = str(uuid.uuid4())
-            entry = dict(p)  # kopiujemy wszystkie istniejące pola tak jak są
+            entry = dict(p)  # copying all of the existing properties
             entry["source"] = self.czi_file_path
             entry["timestamp"] = datetime.utcnow().isoformat() + "Z"
             data[point_id] = entry

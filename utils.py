@@ -4,6 +4,12 @@ import numpy as np
 
 
 def visualize_points(ZIP_object, save_path=None):
+    """
+    Function for plotting the founded points on the image used for analysis
+    :param object ZIP_object: ZeissImageProcessor Object
+    :param str save_path: path to which the png will be saved
+    :return: None
+    """
     plt.imshow(ZIP_object.image_to_analyze, cmap='gray')
 
     plt.colorbar()
@@ -23,6 +29,7 @@ def visualize_points(ZIP_object, save_path=None):
 def parse_args_to_dict():
     """
     Parser of the arguments from the line command
+    return: dict of the arguments
     """
     args_dict = {}
     for arg in sys.argv[1:]:
@@ -43,6 +50,12 @@ def parse_args_to_dict():
 
 
 def choose_the_closest_point(measurement_points, stage_position):
+    """
+    Function to choose the closest point from the founded to the stage position
+    :param list measurement_points: list coordinates of the points which will be compared
+    :param dict stage_position: position of the stage
+    :return: list coordinates of the closest point
+    """
     stage = np.array([stage_position['x'], stage_position['y'], stage_position['z']])
 
     distances = [np.linalg.norm(np.array(p["position"]) - stage) for p in measurement_points]

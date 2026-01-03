@@ -9,20 +9,19 @@ from datetime import datetime
 class ZeissFCSProcessor:
     """
     Processes Zeiss ConfoCor3 .raw files and identifies the file
-    with the highest mean photon intensity.
+    with the highest mean photon intensity. At this moment requires 'FCS_points.json' in the result file for reading
+    the corresponding stage positions.
     """
 
     def __init__(self, folder_path):
         """
         Initialize the FCS processor.
 
-        :param folder_path: Path to the folder containing .raw files
+        :param folder_path: Path to the folder containing .raw files and FCS_points.json
         """
         self.folder_path = folder_path
 
-        print(os.listdir(folder_path))
-
-        # Collect all .raw files from the folder
+        # Collects all .raw files from the folder
         self.raw_files = [
             os.path.join(folder_path, f)
             for f in os.listdir(folder_path)
@@ -89,7 +88,10 @@ class ZeissFCSProcessor:
 
         return best_file, max_intensity
 
-    def get_measurement_points(self):  # connects best file with the stage position
+    def get_measurement_points(self):
+        """
+        Connects chosen file with the position from FCS_points.json
+        """
 
         best_file, max_intensity = self.find_highest_intensity_file()
 
@@ -106,8 +108,8 @@ class ZeissFCSProcessor:
         # build dictionary for that point
         point_entry = {
             "position": [positions["x"], positions["y"], positions["z"]],
-            "intensity": max_intensity,  # assuming your dict has it
-            "source": self.folder_path,  # source path of data
+            "intensity": max_intensity,
+            "source": self.folder_path,
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
 

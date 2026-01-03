@@ -5,8 +5,6 @@ from datetime import datetime
 
 def read_confo_cor3(filepath):
     """
-    Python equivalent of MATLAB readConfoCor3.m
-
     Reads Zeiss ConfoCor3 .raw photon arrival time files.
     Returns dict compatible with photonData struct.
     """
