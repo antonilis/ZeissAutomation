@@ -1,9 +1,22 @@
 import os
 import sys
+import subprocess
 import sphinx_rtd_theme
 
 
 sys.path.insert(0, os.path.abspath('../../'))  # path to the main directory
+
+# ------------------------------------------------------
+# Automatically generate .rst files for Python modules
+# ------------------------------------------------------
+# Output directory for .rst files (same as source)
+rst_output = os.path.abspath(os.path.dirname(__file__))
+
+# List of module directories to document
+module_dirs = ['../../data_processing', '../../IO']
+
+for mod_dir in module_dirs:
+    subprocess.call(['sphinx-apidoc', '-o', rst_output, mod_dir])
 
 # -- Project information -----------------------------------------------------
 
