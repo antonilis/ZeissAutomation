@@ -9,7 +9,6 @@ from data_processing.image_analysis.pixel_stage_converter import z_normal
 
 @register_class
 class Circles(ImageAnalysisTemplate):
-
     """
     Class for detecting circular objects using Otsu thresholding
     and contour-based shape analysis.

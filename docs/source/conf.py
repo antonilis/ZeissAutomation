@@ -4,7 +4,7 @@ import subprocess
 
 
 sys.path.insert(0, os.path.abspath('../../'))  # path to the main directory
-
+sys.path.insert(0, os.path.abspath('../../ZeissAPI/'))
 # ------------------------------------------------------
 # Automatically generate .rst files for Python modules
 # ------------------------------------------------------

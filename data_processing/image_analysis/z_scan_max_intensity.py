@@ -9,6 +9,7 @@ class Max_intensity_Z_Scan(ImageAnalysisTemplate):
     """
      CLass for finding the measurement points at maximum intensity along Z axis.
      """
+
     def get_max_intensity(self):
         """
         Find the index along Z axis with maximum summed intensity.

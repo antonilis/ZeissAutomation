@@ -146,7 +146,6 @@ class HexagonalMesh(ImageAnalysisTemplate):
 
         measurement_points = []
 
-
         groups = [
             (nodes, "node"),
             (edge_midpoints, "edge midpoint"),

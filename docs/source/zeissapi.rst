@@ -27,7 +27,7 @@ Its main responsibilities include:
 ---
 
 Main Macro: ``main_macro.czmac``
--------------------------------
+-----------------------------
 
 This macro defines the core acquisition logic and user interface.
 
@@ -154,7 +154,7 @@ AcquisitionGrid
 ---
 
 Python Analysis Bridge
----------------------
+----------------------
 
 The following helper modules are implemented in IronPython.
 
