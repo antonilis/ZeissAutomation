@@ -1,15 +1,27 @@
-Config Module
-=============
+config
+======
 
-The `config` module contains configuration settings used throughout the project.
+The ``config`` directory contains JSON configuration files responsible for:
 
-This includes:
+* Defining paths and project-level settings
+* Configuring preprocessing and segmentation algorithms
 
-- default experiment parameters
-- path and project configuration
-- constants for pipeline behavior
+Files
+-----
 
-.. automodule:: config
-   :members:
-   :undoc-members:
-   :show-inheritance:
+``path_config.json``
+~~~~~~~~~~~~~~~~~~~~
+Contains paths related to the project setup, including:
+
+* Path to the Python virtual environment
+* Path to the project root directory
+* Paths for saving and loading experiment results
+* Default Zeiss file save location
+
+``preprocessing_config.json``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Contains a dictionary defining available segmentation algorithms.
+
+* **Keys**: names of classes located in ``data.processing.image_analysis``
+* **Values**: dictionaries mapping argument names to values required by the selected class
+

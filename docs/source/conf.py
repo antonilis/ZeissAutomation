@@ -32,6 +32,10 @@ extensions = [
     'sphinx.ext.viewcode',
 ]
 autodoc_mock_imports = [
+
+    # IronPython and Zen
+    "System",
+    "Zen"
     # core scientific
     "numpy",
     "scipy",
@@ -81,7 +85,6 @@ exclude_patterns = []
 # -- Options for HTML output -------------------------------------------------
 
 html_theme = 'sphinx_rtd_theme'
-html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
 
 html_theme_options = {
     'navigation_depth': 4,
