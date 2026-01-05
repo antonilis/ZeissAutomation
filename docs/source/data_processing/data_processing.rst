@@ -38,7 +38,8 @@ Notes
 - File paths and arguments are passed via PythonRunner.
 
 
-.. automodule:: data_processing
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. toctree::
+   :maxdepth: 2
+
+   data_processing.image_analysis
+   data_processing.processor
