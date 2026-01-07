@@ -11,3 +11,5 @@ ZeissAutomation
    utils
    IO
    data_processing/data_processing
+   data_processing/image_analysis
+   data_processing/processor
