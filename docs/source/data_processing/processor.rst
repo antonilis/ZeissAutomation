@@ -1,4 +1,4 @@
-Processor Submodule
+Processor
 ==================
 
 .. automodule:: data_processing.processor
