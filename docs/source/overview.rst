@@ -2,7 +2,7 @@ Overview
 ========
 
 This repository provides a modular framework for **automated image acquisition and adaptive fluorescence spectroscopy experiments**
-on confocal microscopes (Zeiss LSM series).
+on confocal microscopes (Zeiss LSM series with ZenBlue).
 
 The framework integrates directly with the **Zen Blue graphical user interface**, enabling full microscope control
 without leaving the GUI environment.
