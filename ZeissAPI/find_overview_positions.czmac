@@ -1,4 +1,5 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+﻿from ZeissAutomation.ZeissAPI.main_macro import CONFIG_PATH
+<?xml version="1.0" encoding="utf-8"?>
 <Script>
   <Context>Zen26</Context>
   <Version>1.0</Version>
@@ -20,6 +21,7 @@ def get_stage_focus_position():
 
     return [x, y, z]
 
+CONFIG_PATH = r".\config\path_config.json"
 
 class AcquisitionGrid:
     """
@@ -27,7 +29,7 @@ class AcquisitionGrid:
     of automated processes
     """
 
-    CONFIG_PATH = r"D:\zeiss\Desktop\automation\config\path_config.json"
+    CONFIG_PATH = CONFIG_PATH
 
     def __init__(
             self,
