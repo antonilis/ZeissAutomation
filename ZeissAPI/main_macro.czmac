@@ -8,26 +8,15 @@ import json
 import time
 import uuid
 from System.IO import Directory, Path, File
-
 from execute_python import PythonAnalysisRunner
 from path_manager_main_macro import PathManager
+from utils import log
 
 
-# Function for logging
-
-def log(msg):
-    """
-    Function for printing the logs to the txt file
-    :param str msg: log to be printed
-    :return: None
-    """
-    path = "D:\\zeiss\\Desktop\\zen_log.txt"
-    with open(path, "a") as f:
-        f.write(msg + "\n")
 
 
-CONFIG_PATH = r"D:\zeiss\Desktop\automation\config\path_config.json"  # JSON with basic path configuration for the software
-PROCESSING_PATH = r"D:\zeiss\Desktop\automation\config\preprocessing_config.json"  # JSON with the arguments for the image analysis
+CONFIG_PATH = r".\config\path_config.json"  # JSON with basic path configuration for the software
+PROCESSING_PATH = r".\config\processing_config.json"  # JSON with the arguments for the image analysis
 
 
 ###################### class for API calls ###########################################################
@@ -123,7 +112,8 @@ class AcquisitionPipeline:
     and quantitative measurements of the identified objects.
     """
 
-    CONFIG_PATH = r"D:\zeiss\Desktop\automation\config\path_config.json"
+    CONFIG_PATH = CONFIG_PATH
+    PROCESSING_PATH = PROCESSING_PATH
 
     def __init__(self,
                  object_visualization_experiment=None,
@@ -142,6 +132,8 @@ class AcquisitionPipeline:
         self.path_manager = PathManager(self.CONFIG_PATH)
         self.python_analysis_runner = PythonAnalysisRunner(self.CONFIG_PATH)
 
+        # Analysis arguments dictionairy
+        self.analysis_arguments_dict = ZeissApiProcessor.read_json(self.PROCESSING_PATH)
 
         self.points_for_overview = self.get_overview_points() # points on which the pipeline will be executed
         self.overview_id = str(uuid.uuid4())
@@ -186,7 +178,7 @@ class AcquisitionPipeline:
 
         if analysis_args:
             args_overview = {'type': 'overview', 'file_path': overview_file_name,
-                             'saving_path': overview_analysis_path, 'analysis_arguments': analysis_args,
+                             'saving_path': overview_analysis_path, 'analysis_arguments': self.analysis_arguments_dict[analysis_args],
                              'is_FCS': False}
 
             log("Initializing the overview image analysis: {}".format(args_overview))
@@ -269,7 +261,7 @@ class AcquisitionPipeline:
         saving_path = self.path_manager.temp_file_path(obj_id, 'xy', name)
 
         args_xy = {'type': 'overview', 'file_path': file_name,
-                   'saving_path': saving_path, 'analysis_arguments': self.reanalysis_dict['xy'], 'is_FCS': False}
+                   'saving_path': saving_path, 'analysis_arguments': self.analysis_arguments_dict[self.reanalysis_dict['xy']], 'is_FCS': False}
 
         log("Running XY reanalysis script with args: {}".format(args_xy))
         self.python_analysis_runner.run(**args_xy)
@@ -302,7 +294,7 @@ class AcquisitionPipeline:
         saving_path = self.path_manager.temp_file_path(obj_id, 'z', name)
 
         args_z = {'type': 'reanalysis_z', 'file_path': file_name, 'saving_path': saving_path,
-                  'analysis_arguments': z_analysis, 'is_FCS': z_cfg['is_FCS']}
+                  'analysis_arguments': self.analysis_arguments_dict[z_analysis], 'is_FCS': z_cfg['is_FCS']}
 
         log("Running Z reanalysis script with args: {}".format(args_z))
         self.python_analysis_runner.run(**args_z)

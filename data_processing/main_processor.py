@@ -10,16 +10,13 @@ Script initialized by the PythonRunner, takes the argumets from PythonRunner and
 or ZeissImageProcessor and saves the results of the analysis to JSON files.
 """
 
-with open('config/preprocessing_config.json', 'r') as file:
-    preprocessing_config = json.load(file)
-
 print("Started main_processor")
 
 command_args = parse_args_to_dict()
 
 print("[INFO] Parsed arguments: {}".format(command_args))
 
-if command_args['is_FCS'] == 'True':
+if command_args['is_FCS']:
 
     print('Analyzing FCS')
 
@@ -37,7 +34,7 @@ else:
 
     print("Analyzing Image")
 
-    analysis_type = preprocessing_config[command_args['analysis_arguments']]
+    analysis_type = command_args['analysis_arguments']
 
     obj = ZeissImageProcessor(command_args['file_path'], **analysis_type)
 

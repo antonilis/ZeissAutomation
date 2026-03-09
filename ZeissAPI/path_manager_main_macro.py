@@ -1,16 +1,8 @@
 ﻿from System.IO import Directory, Path, File
 import json
+from utils import log
 
 
-def log(msg):
-    """
-    Function for printing the logs to the txt file
-    :param str msg: log to be printed
-    :return: None
-    """
-    path = "D:\\Automation\\zen_log.txt"
-    with open(path, "a") as f:
-        f.write(msg + "\n")
 
 
 class PathManager:

@@ -1,19 +1,6 @@
 from System.Diagnostics import Process
 import json
-
-
-def log(msg):
-
-    """
-    Function for printing the logs to the txt file
-    :param str msg: log to be printed
-    :return: None
-    """
-
-    path = "D:\\Automation\\zen_log.txt"
-    with open(path, "a") as f:
-        f.write(msg + "\n")
-
+from utils import log
 
 
 class PythonAnalysisRunner:
@@ -21,7 +8,7 @@ class PythonAnalysisRunner:
     """
     Class responsible for the correct initialization of the main_processor Python script and loading correct arguments.
 
-    param str config_path: path to the localization of the config folder
+    param str config_path: path to the localization of the python_config folder
 
     """
     def __init__(self, config_path):
@@ -33,17 +20,20 @@ class PythonAnalysisRunner:
         self.script = self.config["python_script"] #path to the python script - main_processor
         self.project = self.config["python_project_root"] #root of the main_processor localization
 
-
     def _make_args(self, **kwargs):
         """
-        Function responsible for rewriting the dictionairy of the arguments for Python to the list of strings readable by the command line
-        :param dict kwargs: dictionary of the arguments for Python initialization
-        :return str args: arguments for initializing the Python from command line
+        Convert dictionary of arguments to a list of CLI arguments.
+        Works with strings, numbers, booleans, lists and dictionaries.
         """
         args = []
         for k, v in kwargs.items():
             if v is not None:
-                args.append("--{}={}".format(k, v))
+                if isinstance(v, (dict, list)):
+
+                    v_str = json.dumps(v)
+                else:
+                    v_str = str(v)
+                args.append(f"--{k}={v_str}")
         return args
 
     def run(self, **kwargs):

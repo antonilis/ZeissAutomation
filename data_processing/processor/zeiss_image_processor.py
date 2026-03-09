@@ -89,7 +89,7 @@ if __name__ == '__main__':
 
     #main_directions = choose_chi_files(main_path)
 
-    with open('../../config/preprocessing_config.json', 'r') as file:
+    with open('../../python_config/processing_config.json', 'r') as file:
         preprocessing_config = json.load(file)
 
     details = preprocessing_config['FLGUV']

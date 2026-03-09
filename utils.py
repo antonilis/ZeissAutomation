@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import sys
+import json
 import numpy as np
 
 
@@ -28,23 +29,34 @@ def visualize_points(ZIP_object, save_path=None):
 
 def parse_args_to_dict():
     """
-    Parser of the arguments from the line command
-    return: dict of the arguments
+    Parser of command line arguments to dictionary.
+    Automatically converts JSON strings to dict/list.
+    Also converts "True"/"False" strings to booleans.
+    Returns: dict
     """
     args_dict = {}
     for arg in sys.argv[1:]:
         if arg.startswith("--"):
-            # usuń początkowe '--'
             kv = arg[2:]
-            # rozdziel pierwszy '='
             if "=" in kv:
                 key, value = kv.split("=", 1)
-                # opcjonalnie usuń cudzysłowy, jeśli ktoś przekazał np. --'obj id'="42"
                 key = key.strip("'\"")
                 value = value.strip("'\"")
-                args_dict[key] = value
+
+                # Spróbuj najpierw zamienić na JSON
+                try:
+                    value_parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    # Jeśli to nie JSON, spróbuj rozpoznać True/False
+                    if value.lower() == "true":
+                        value_parsed = True
+                    elif value.lower() == "false":
+                        value_parsed = False
+                    else:
+                        value_parsed = value
+
+                args_dict[key] = value_parsed
             else:
-                # argument flagowy bez wartości
                 args_dict[kv] = True
     return args_dict
 
