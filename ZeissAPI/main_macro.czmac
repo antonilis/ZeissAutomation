@@ -568,7 +568,11 @@ else:
 
             ZeissApiProcessor.move(point['position'])
 
-            pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id, name=point['name'])
+            z_cfg = (pipeline.reanalysis_dict or {}).get('z')
+
+            if z_cfg and (z_cfg.get('z_experiment') is not None and z_cfg.get('z_analysis') is not None):
+
+                pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id, name=point['name'])
 
             for experiment in selected_experiments:
                 pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post',
@@ -578,7 +582,10 @@ else:
 
     else:
 
-        pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id)
+        z_cfg = (pipeline.reanalysis_dict or {}).get('z')
+
+        if z_cfg and (z_cfg.get('z_experiment') is not None and z_cfg.get('z_analysis') is not None):
+            pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id)
 
         for experiment in selected_experiments:
             pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post')

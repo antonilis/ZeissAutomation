@@ -1,5 +1,4 @@
-﻿from ZeissAutomation.ZeissAPI.main_macro import CONFIG_PATH
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Script>
   <Context>Zen26</Context>
   <Version>1.0</Version>
