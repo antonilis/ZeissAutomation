@@ -25,6 +25,11 @@ SELECTION_CONFIG_NAME = "selection_config.json"
 # and no drive letter has to be hardcoded.
 BOOTSTRAP_LOG_NAME = "zen_log.txt"
 
+# Fallback destination of the settings of the last run, used when path_config.json does not
+# name one. Same rule as the log above: a missing key must not stop an acquisition, the file
+# then simply lives next to the macros.
+LAST_SETUP_NAME = "last_setup.json"
+
 _log_path = None
 
 
@@ -97,6 +102,14 @@ def bootstrap_log_path():
     return Path.Combine(macro_directory(), BOOTSTRAP_LOG_NAME)
 
 
+def default_last_setup_path():
+    """
+    Fallback destination of the saved setup, next to the macros.
+    :return: str full path to the saved setup
+    """
+    return Path.Combine(macro_directory(), LAST_SETUP_NAME)
+
+
 def set_log_path(path):
     """
     Point the logger at the file configured in path_config.json.
@@ -146,6 +159,10 @@ class RuntimeConfig:
         self.measurements = self.config["measuring_points_path"]
         self.analysis = self.config["image_for_analysis_path"]
         self.zeiss_temp = self.config["zeiss_temp_file"]
+
+        # Where main_macro records the settings it was last run with, so that the next run can
+        # start from them instead of from an empty set of dropdowns
+        self.last_setup_path = self.config.get("last_setup_path", default_last_setup_path())
 
         # The CPython installation started by PythonAnalysisRunner
         self.python_exe = self.config["python_exe"]
