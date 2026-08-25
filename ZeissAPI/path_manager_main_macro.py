@@ -1,28 +1,28 @@
 ﻿from System.IO import Directory, Path, File
-import json
-from utils import log
 
-
+from runtime_config import log
 
 
 class PathManager:
     """
     Class responsible for the generation of the correct paths for the pipeline for saving files (JSON, czi, raw)
     in the correct directiories with correct names. A helping class for AcquisitionPipeline
+
+    param RuntimeConfig config: configuration built by the macro, this class does not read it from disk itself
     """
 
-    def __init__(self, config_path):
-        with open(config_path, "r") as f:
-            self.config = json.load(f)
+    def __init__(self, config):
+
+        self.config = config
 
         # path to the dorectory to which results of measurements are being saved
-        self.results = self.config["results_path"]
+        self.results = config.results
         # path to temp file which keeps information about positions of the objects for measurements
-        self.measurements = self.config["measuring_points_path"]
+        self.measurements = config.measurements
         # path to the directory with the images chosen for overview to find the objects
-        self.analysis = self.config["image_for_analysis_path"]
+        self.analysis = config.analysis
         # path to the default folder to which Zen software autosaves (used for FCS experiments)
-        self.zeiss_temp = self.config["zeiss_temp_file"]
+        self.zeiss_temp = config.zeiss_temp
 
     def overview_image_path(self, obj_id, name=None):
         """

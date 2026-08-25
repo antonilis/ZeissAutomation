@@ -1,6 +1,6 @@
 from System.Diagnostics import Process
-import json
-from utils import log
+
+from runtime_config import log
 
 
 class PythonAnalysisRunner:
@@ -8,32 +8,33 @@ class PythonAnalysisRunner:
     """
     Class responsible for the correct initialization of the main_processor Python script and loading correct arguments.
 
-    param str config_path: path to the localization of the python_config folder
+    param RuntimeConfig config: configuration built by the macro, this class does not read it from disk itself
 
     """
-    def __init__(self, config_path):
+    def __init__(self, config):
 
-        with open(config_path, "r") as f:
-            self.config = json.load(f)
+        self.config = config
 
-        self.python = self.config["python_exe"] #path to the virtual environment
-        self.script = self.config["python_script"] #path to the python script - main_processor
-        self.project = self.config["python_project_root"] #root of the main_processor localization
+        self.python = config.python_exe #path to the virtual environment
+        self.script = config.python_script #path to the python script - main_processor
+        self.project = config.python_project_root #root of the main_processor localization
+
+        # The CPython side does not know where the ZEN runtime folder is, so the location
+        # of preprocessing_config.json is handed to it with every call
+        self.preprocessing_config = config.preprocessing_config_path
+
 
     def _make_args(self, **kwargs):
         """
-        Convert dictionary of arguments to a list of CLI arguments.
-        Works with strings, numbers, booleans, lists and dictionaries.
+        Function responsible for rewriting the dictionairy of the arguments for Python to the list of strings readable by the command line
+        Values are quoted, because result folders are named after the sample and may contain spaces.
+        :param dict kwargs: dictionary of the arguments for Python initialization
+        :return str args: arguments for initializing the Python from command line
         """
         args = []
         for k, v in kwargs.items():
             if v is not None:
-                if isinstance(v, (dict, list)):
-
-                    v_str = json.dumps(v)
-                else:
-                    v_str = str(v)
-                args.append(f"--{k}={v_str}")
+                args.append('--{}="{}"'.format(k, v))
         return args
 
     def run(self, **kwargs):
@@ -43,7 +44,11 @@ class PythonAnalysisRunner:
         :return: None
         """
         log("Started run of python!")
-        
+
+        # The location of the analysis presets travels with every call, so that the
+        # CPython side never has to guess where the config folder is
+        kwargs["preprocessing_config"] = self.preprocessing_config
+
         proc = Process()
         proc.StartInfo.FileName = self.python
         proc.StartInfo.WorkingDirectory = self.project

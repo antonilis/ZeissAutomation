@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Script>
   <Context>Zen26</Context>
   <Version>1.0</Version>
@@ -6,7 +6,14 @@
   <Text>
 import json
 from System.IO import Directory, Path, File
-from execute_python import log
+
+from runtime_config import RuntimeConfig, log
+
+
+# Same rule as in main_macro: the config folder sits next to this macro in the ZEN
+# runtime folder, it is read once here, and the resulting object is passed to
+# AcquisitionGrid instead of letting it locate the configuration itself.
+CONFIG = RuntimeConfig()
 
 
 def get_stage_focus_position():
@@ -20,18 +27,19 @@ def get_stage_focus_position():
 
     return [x, y, z]
 
-CONFIG_PATH = r".\config\path_config.json"
 
 class AcquisitionGrid:
     """
     Class for the fast generation of the points on which one will perform the full pipeline
     of automated processes
-    """
 
-    CONFIG_PATH = CONFIG_PATH
+    param RuntimeConfig config: configuration built by the macro, used only for the directory
+    in which points_for_overview.json has to be saved
+    """
 
     def __init__(
             self,
+            config,
 
             # 'available modes are: experiment' or 'manual', experiment mode reads the points from the centers of the tiles, manual generates the points by
             # specifying the shifts in x, y and start/end position).
@@ -44,13 +52,13 @@ class AcquisitionGrid:
             # For example start=A1, end=C4. The grid is then generated where A1 is the top-left corner and C4 is bottom right. The distances between wells are calculated
             # from the shifts and starting_position
     ):
+        self.config = config
         self.experiment_name = experiment_name
         self.mode = mode
         self.manual_points = manual_points or []
 
-        self.config = self.read_json(self.CONFIG_PATH)
-        self.measuring_points_path = self.config[
-            "measuring_points_path"]  # required for savings points in the directory compatible with automation pipeline
+        # required for savings points in the directory compatible with automation pipeline
+        self.measuring_points_path = config.measurements
 
         # Choosing the method suitable mode of the points generation
         if self.mode == "experiment":
@@ -59,11 +67,6 @@ class AcquisitionGrid:
             self.points_for_overview = self.generate_grid_from_args()
         else:
             raise ValueError("Unknown mode: {}".format(self.mode))
-
-    @staticmethod
-    def read_json(path):
-        with open(path, "r") as file:
-            return json.load(file)
 
     def calculate_points_for_overview(self):
         """
@@ -138,6 +141,8 @@ class AcquisitionGrid:
         with open(saving_path, "w") as file:
             json.dump(self.points_for_overview, file, indent=2)
 
+        log("Saved {} overview points to {}".format(len(self.points_for_overview), saving_path))
+
 
 ############################ GUI generation ##############################################################################
 def getshortfiles(filelist):
@@ -205,7 +210,8 @@ else:
                                 get_stage_focus_position()}
     chosen_experiment = None
 
-grid_manual = AcquisitionGrid(mode=chosen_mode, experiment_name=chosen_experiment, manual_points=chosen_manual_points)
+grid_manual = AcquisitionGrid(CONFIG, mode=chosen_mode, experiment_name=chosen_experiment,
+                              manual_points=chosen_manual_points)
 grid_manual.save_overview_points()
 
 </Text>

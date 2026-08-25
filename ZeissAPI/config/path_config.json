@@ -4,4 +4,5 @@
   "results_path":"D:\\automation\\results\\",
 "image_for_analysis_path" : "D:\\automation\\image_for_analysis\\",
 "python_project_root": "D:\\automation\\",
-"zeiss_temp_file": "D:\\zeiss\\Pictures\\"}
+"zeiss_temp_file": "D:\\zeiss\\Pictures\\",
+"log_path": "D:\\automation\\zen_log.txt"}

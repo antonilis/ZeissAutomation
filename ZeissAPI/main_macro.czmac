@@ -8,15 +8,18 @@ import json
 import time
 import uuid
 from System.IO import Directory, Path, File
+
+from runtime_config import RuntimeConfig, log, read_json as read_json_file
 from execute_python import PythonAnalysisRunner
 from path_manager_main_macro import PathManager
-from utils import log
 
 
-
-
-CONFIG_PATH = r".\config\path_config.json"  # JSON with basic path configuration for the software
-PROCESSING_PATH = r".\config\processing_config.json"  # JSON with the arguments for the image analysis
+# The configuration lives in the config folder next to this macro, inside the ZEN
+# runtime folder. It is located and read exactly once, here, and then handed down to
+# everything that needs a path: the pipeline, the path manager, the Python runner and
+# the adaptive experiment functions. Nothing else in this macro builds a path to the
+# config folder, and the destination of log() comes from it as well.
+CONFIG = RuntimeConfig()
 
 
 ###################### class for API calls ###########################################################
@@ -27,10 +30,10 @@ class ZeissApiProcessor:
 
     @staticmethod
     def read_json(path):
-        with open(path, "r") as file:
-            data = json.load(file)
-
-        return data
+        """
+        Kept so that the call sites below do not change, the implementation lives in runtime_config.
+        """
+        return read_json_file(path)
 
     @staticmethod
     def get_stage_focus_position():
@@ -80,7 +83,7 @@ class ZeissApiProcessor:
         if document is not None:  # The document is None for the .fcs experiments
             document.Save(name)
         else:
-            files = PathManager(CONFIG_PATH).get_latest_fcs_and_raws()
+            files = PathManager(CONFIG).get_latest_fcs_and_raws()
 
             log(str(files))
 
@@ -110,15 +113,18 @@ class AcquisitionPipeline:
     A comprehensive pipeline encompassing object detection, motion control toward the detected objects,
     visualization, and post-processing steps involving reanalysis of spatial coordinates (XY and Z)
     and quantitative measurements of the identified objects.
+
+    param RuntimeConfig config: configuration built by the macro. The pipeline never locates
+    the config folder itself, it only passes this object on to its helpers.
     """
 
-    CONFIG_PATH = CONFIG_PATH
-    PROCESSING_PATH = PROCESSING_PATH
-
     def __init__(self,
+                 config,
                  object_visualization_experiment=None,
                  reanalysis_dict=None,
                  post_reanalysis_experiments=None, adaptive_experiment=None):
+
+        self.config = config
 
         # arguments collecting the experiments names and arguments for Python analysis, which will be used at different
         # stages of the pipeline
@@ -128,12 +134,10 @@ class AcquisitionPipeline:
         self.adaptive_experiment = adaptive_experiment
 
         # Initializing objects for the directories management for reading/saving the results and for initializing python
-        # with the arguments
-        self.path_manager = PathManager(self.CONFIG_PATH)
-        self.python_analysis_runner = PythonAnalysisRunner(self.CONFIG_PATH)
+        # with the arguments. Both receive the already loaded configuration.
+        self.path_manager = PathManager(self.config)
+        self.python_analysis_runner = PythonAnalysisRunner(self.config)
 
-        # Analysis arguments dictionairy
-        self.analysis_arguments_dict = ZeissApiProcessor.read_json(self.PROCESSING_PATH)
 
         self.points_for_overview = self.get_overview_points() # points on which the pipeline will be executed
         self.overview_id = str(uuid.uuid4())
@@ -178,7 +182,7 @@ class AcquisitionPipeline:
 
         if analysis_args:
             args_overview = {'type': 'overview', 'file_path': overview_file_name,
-                             'saving_path': overview_analysis_path, 'analysis_arguments': self.analysis_arguments_dict[analysis_args],
+                             'saving_path': overview_analysis_path, 'analysis_arguments': analysis_args,
                              'is_FCS': False}
 
             log("Initializing the overview image analysis: {}".format(args_overview))
@@ -260,8 +264,11 @@ class AcquisitionPipeline:
         file_name = self.path_manager.result_path(obj_id, '_exp', self.object_visualization_experiment, name)
         saving_path = self.path_manager.temp_file_path(obj_id, 'xy', name)
 
-        args_xy = {'type': 'overview', 'file_path': file_name,
-                   'saving_path': saving_path, 'analysis_arguments': self.analysis_arguments_dict[self.reanalysis_dict['xy']], 'is_FCS': False}
+        # The type has to be reanalysis_xy, not overview: it is what makes the analysis
+        # side reduce several detections to the one nearest the current stage position,
+        # instead of returning them all and letting the line below pick an arbitrary one.
+        args_xy = {'type': 'reanalysis_xy', 'file_path': file_name,
+                   'saving_path': saving_path, 'analysis_arguments': self.reanalysis_dict['xy'], 'is_FCS': False}
 
         log("Running XY reanalysis script with args: {}".format(args_xy))
         self.python_analysis_runner.run(**args_xy)
@@ -294,7 +301,7 @@ class AcquisitionPipeline:
         saving_path = self.path_manager.temp_file_path(obj_id, 'z', name)
 
         args_z = {'type': 'reanalysis_z', 'file_path': file_name, 'saving_path': saving_path,
-                  'analysis_arguments': self.analysis_arguments_dict[z_analysis], 'is_FCS': z_cfg['is_FCS']}
+                  'analysis_arguments': z_analysis, 'is_FCS': z_cfg['is_FCS']}
 
         log("Running Z reanalysis script with args: {}".format(args_z))
         self.python_analysis_runner.run(**args_z)
@@ -380,7 +387,7 @@ def fcs_zscan(exp_item, obj_id, stage, obj, name):
 
         positions_dict[name_for_dict] = {'x': modified_position[0], 'y': modified_position[1], 'z': z_offset[i]}
 
-    path_menager = PathManager(CONFIG_PATH)
+    path_menager = PathManager(CONFIG)
 
     res_dir = path_menager.result_dir(obj_id, stage, name)
 
@@ -400,8 +407,7 @@ def fcs_zscan(exp_item, obj_id, stage, obj, name):
 ################################## Code for generating GUI #######################################
 
 
-with open(PROCESSING_PATH, 'r') as file:
-    preprocessing_data = json.load(file)
+preprocessing_data = CONFIG.preprocessing_config()
 
 
 def getshortfiles(filelist):
@@ -466,7 +472,10 @@ while not done:
     window = ZenWindow()
     window.Initialize("Select post-analysis experiments")
 
-    window.AddDropDown('post_exp_name', 'Choose post analysis experiment:', experiments, 0)
+    # "None" comes first and is the default, so that closing this window with Done and
+    # without touching anything leaves the list empty. The object visualization
+    # experiment is a measurement in its own right, and often the only one wanted.
+    window.AddDropDown('post_exp_name', 'Choose post analysis experiment:', ["None"] + experiments, 0)
     chosen_text = "\n".join(selected_experiments) if selected_experiments else "None yet"
     window.AddMultiLineTextBox('chosen_post_exps', 'Currently selected:', chosen_text)
     window.AddDropDown('action', 'What next?', ['Add another', 'Done', 'Clear all'], 0)
@@ -483,12 +492,14 @@ while not done:
         raise SystemExit
 
     if action == 'Add another':
-        if new_exp not in selected_experiments:
+        if new_exp != "None" and new_exp not in selected_experiments:
             selected_experiments.append(new_exp)
     elif action == 'Clear all':
         selected_experiments = []
     elif action == 'Done':
-        if new_exp not in selected_experiments:
+        # Done still takes whatever is selected, so that picking an experiment and
+        # finishing takes one click instead of two. "None" is the exception.
+        if new_exp != "None" and new_exp not in selected_experiments:
             selected_experiments.append(new_exp)
         done = True
 
@@ -532,8 +543,9 @@ multiple_overviews = result_mode.GetValue('multiple_overiews')
 
 if finding_objects:
 
-    pipeline = AcquisitionPipeline(object_visualization_experiment=result_setup.GetValue('vis_exp'),
-                                   reanalysis_dict={'xy': none_or_value(result_setup.GetValue('over_analysis')),
+    pipeline = AcquisitionPipeline(CONFIG,
+                                   object_visualization_experiment=result_setup.GetValue('vis_exp'),
+                                   reanalysis_dict={'xy': none_or_value(result_setup.GetValue('rean_xy_name')),
                                                     'z': {'z_experiment': none_or_value(
                                                         result_setup.GetValue('z_exp_name')),
                                                           'z_analysis': none_or_value(
@@ -557,7 +569,7 @@ if finding_objects:
         pipeline.capture_objects(name=None)
 
 else:
-    pipeline = AcquisitionPipeline(
+    pipeline = AcquisitionPipeline(CONFIG,
         reanalysis_dict={'z': {'z_experiment': none_or_value(result_setup.GetValue('z_exp_name')),
                                'z_analysis': none_or_value(result_setup.GetValue('z_analysis')),
                                'is_FCS': result_setup.GetValue('is_FCS')}},
@@ -568,29 +580,22 @@ else:
 
             ZeissApiProcessor.move(point['position'])
 
-            z_cfg = (pipeline.reanalysis_dict or {}).get('z')
-
-            if z_cfg and (z_cfg.get('z_experiment') is not None and z_cfg.get('z_analysis') is not None):
-
-                pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id, name=point['name'])
+            pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id, name=point['name'])
 
             for experiment in selected_experiments:
                 pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post',
                                          name=point['name'], obj=None)
 
-            Zen.Appplication.Documents.RemoveAll()
+            Zen.Application.Documents.RemoveAll()
 
     else:
 
-        z_cfg = (pipeline.reanalysis_dict or {}).get('z')
-
-        if z_cfg and (z_cfg.get('z_experiment') is not None and z_cfg.get('z_analysis') is not None):
-            pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id)
+        pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id)
 
         for experiment in selected_experiments:
             pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post')
 
-        Zen.Appplication.Documents.RemoveAll()  #
+        Zen.Application.Documents.RemoveAll()  #
 
 </Text>
   <Author></Author>
