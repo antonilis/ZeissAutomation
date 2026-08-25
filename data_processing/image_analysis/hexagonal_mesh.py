@@ -155,6 +155,7 @@ class HexagonalMesh(ImageAnalysisTemplate):
         for group, point_type in groups:
             for pos in group:
                 measurement_points.append({
+                    "id": self.new_object_id(),
                     "position": pos,
                     "type": point_type
                 })

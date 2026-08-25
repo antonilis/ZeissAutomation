@@ -8,24 +8,36 @@ class CziFileReader:
     Class for reading a CZI file and extracting image data and metadata for analysis.
     """
 
-    def __init__(self, path, analysis_channel):
+    def __init__(self, path, analysis_channel, extra_channels=None):
 
         self.path = path
         self.analysis_channel = analysis_channel
+        # channels besides the analysis one, requested by the object selection algorithm so
+        # that it can measure an object on a channel it was not detected on
+        self.extra_channels = extra_channels or []
 
-        self.czi_file, self.metadata = self.read_czi_file(path)
+        self.czi_file, self.metadata, self.channels_data = self.read_czi_file(path)
 
     def read_czi_file(self, path):
         """
-        Open CZI file, extract metadata and image data for the chosen channel.
-        :return: tuple (image_data as ndarray, metadata as dict)
+        Open CZI file, extract metadata and image data for the chosen channel, together with
+        any further channels asked for through extra_channels.
+        :return: tuple (image_data as ndarray, metadata as dict, dict of channel number to ndarray)
         """
 
         with pyczi.open_czi(path) as czidoc:
             metadata = self.extract_metadata(czidoc.raw_metadata)
             image_data = self.get_image_to_analyze(czidoc, self.analysis_channel)
 
-        return image_data, metadata
+            # The document can only be read inside this block, so every channel that may be
+            # needed later has to be taken now
+            channels_data = {self.analysis_channel: image_data}
+
+            for channel in self.extra_channels:
+                if channel not in channels_data:
+                    channels_data[channel] = self.get_image_to_analyze(czidoc, channel)
+
+        return image_data, metadata, channels_data
 
     def extract_metadata(self, metadata_str):
         """

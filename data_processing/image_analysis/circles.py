@@ -14,6 +14,8 @@ class Circles(ImageAnalysisTemplate):
     and contour-based shape analysis.
     """
 
+    provides_object_rois = True
+
     @staticmethod
     def _classify_contours_by_area(contours, hierarchy, top_n=None):
         """
@@ -64,15 +66,20 @@ class Circles(ImageAnalysisTemplate):
                 fit_ratio = cnt_area / circle_area if circle_area > 0 else 0
 
                 if fit_ratio >= min_fit_ratio:
-                    results[idx] = {"center": (cx, cy), "radius": int(radius), "fit ratio": fit_ratio}
+                    # the contour itself is carried along, because get_object_rois needs the real
+                    # outline and not the enclosing circle
+                    results[idx] = {"center": (cx, cy), "radius": int(radius), "fit ratio": fit_ratio,
+                                    "contour": cnt}
 
         return results
 
     def filter_by_size(self, GUVs_dict, min_size_um=1, max_size_um=50):
         """
         Filter detected objects by size range in micrometers.
-        :return: list of dictionaries with object positions in pixel coordinates
-                 and radii in micrometers
+        The contours are returned separately rather than inside the dictionaries, because those are
+        written to JSON further down the pipeline and a numpy array would not survive the trip.
+        :return: tuple (list of dictionaries with object positions in pixel coordinates and radii in
+                 micrometers, dict of object id to the matching contour)
         """
         scale = np.mean([
             self.metadata['scaling_um_per_pixel']['X'],
@@ -80,15 +87,43 @@ class Circles(ImageAnalysisTemplate):
         ])
 
         filtered = []
+        contours = {}
+
         for v in GUVs_dict.values():
             radius_um = v['radius'] * scale * 10 ** (6)
             if min_size_um <= radius_um <= max_size_um:
+                object_id = self.new_object_id()
+
                 filtered.append({
+                    'id': object_id,
                     'position': [v['center'][0], v['center'][1]],
                     'radius': radius_um, 'fit ratio': v['fit ratio']
                 })
+                contours[object_id] = v['contour']
 
-        return filtered
+        return filtered, contours
+
+    def get_object_rois(self):
+        """
+        Filled outline of every object that survived the size filter, keyed by the same id as the
+        points. The whole object is handed over, its interior included, so that an object selection
+        can decide for itself whether it cares about the membrane, the lumen or both.
+        :return: dict of object id to its bounding box and a boolean mask inside it
+        """
+        rois = {}
+
+        for object_id, contour in self.object_contours.items():
+            x, y, width, height = cv2.boundingRect(contour)
+
+            # drawn into the bounding box only, with the contour shifted by the same offset
+            mask = np.zeros((height, width), dtype=np.uint8)
+            cv2.drawContours(mask, [contour], -1, 1, thickness=-1, offset=(-x, -y))
+
+            rois[object_id] = {'x_start': x, 'x_stop': x + width,
+                               'y_start': y, 'y_stop': y + height,
+                               'mask': mask.astype(bool)}
+
+        return rois
 
     def get_measurement_points(self):
         """
@@ -123,8 +158,9 @@ class Circles(ImageAnalysisTemplate):
         center_radius_dict = self.get_contour_centers_and_radii(classified_external,
                                                                 self.analysis_details.get('min_fit_ratio', 0.2))
 
-        measurement_point = self.filter_by_size(center_radius_dict, **{k: v for k, v in self.analysis_details.items() if
-                                                                       k in ["min_size_um", "max_size_um"]})
+        measurement_point, self.object_contours = self.filter_by_size(
+            center_radius_dict,
+            **{k: v for k, v in self.analysis_details.items() if k in ["min_size_um", "max_size_um"]})
 
         transformed_points = self.pixel_converter.convert_points(measurement_point, xy_mode='normal',
                                                                  z_strategy=z_normal)

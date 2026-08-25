@@ -1,6 +1,5 @@
 import matplotlib.pyplot as plt
 import sys
-import json
 import numpy as np
 
 
@@ -16,9 +15,16 @@ def visualize_points(ZIP_object, save_path=None):
     plt.colorbar()
     meas_points = ZIP_object.not_scaled_points
 
+    # Objects rejected by the object selection are drawn too, with a red cross, so that a
+    # threshold can be judged from the image instead of guessed. Points from a run without any
+    # object selection all carry selected=True, so they simply all come out as dots.
     for item in meas_points:
         point = item['position']
-        plt.scatter(point[0], point[1], s=10)
+
+        if item.get('selected', True):
+            plt.scatter(point[0], point[1], s=10)
+        else:
+            plt.scatter(point[0], point[1], s=20, c='red', marker='x')
 
     plt.title('Points for measurement')
 
@@ -29,34 +35,23 @@ def visualize_points(ZIP_object, save_path=None):
 
 def parse_args_to_dict():
     """
-    Parser of command line arguments to dictionary.
-    Automatically converts JSON strings to dict/list.
-    Also converts "True"/"False" strings to booleans.
-    Returns: dict
+    Parser of the arguments from the line command
+    return: dict of the arguments
     """
     args_dict = {}
     for arg in sys.argv[1:]:
         if arg.startswith("--"):
+            # usuń początkowe '--'
             kv = arg[2:]
+            # rozdziel pierwszy '='
             if "=" in kv:
                 key, value = kv.split("=", 1)
+                # opcjonalnie usuń cudzysłowy, jeśli ktoś przekazał np. --'obj id'="42"
                 key = key.strip("'\"")
                 value = value.strip("'\"")
-
-                # Spróbuj najpierw zamienić na JSON
-                try:
-                    value_parsed = json.loads(value)
-                except json.JSONDecodeError:
-                    # Jeśli to nie JSON, spróbuj rozpoznać True/False
-                    if value.lower() == "true":
-                        value_parsed = True
-                    elif value.lower() == "false":
-                        value_parsed = False
-                    else:
-                        value_parsed = value
-
-                args_dict[key] = value_parsed
+                args_dict[key] = value
             else:
+                # argument flagowy bez wartości
                 args_dict[kv] = True
     return args_dict
 

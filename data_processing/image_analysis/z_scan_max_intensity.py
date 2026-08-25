@@ -37,11 +37,11 @@ class Max_intensity_Z_Scan(ImageAnalysisTemplate):
 
             moved_z_index = max_z_index - center
 
-            measurement_points = [{'position': [x, y, moved_z_index]}]
+            measurement_points = [{'id': self.new_object_id(), 'position': [x, y, moved_z_index]}]
 
         else:
 
-            measurement_points = [{'position': [x, y, max_z_index]}]
+            measurement_points = [{'id': self.new_object_id(), 'position': [x, y, max_z_index]}]
 
         transformed_points = self.pixel_converter.convert_points(measurement_points, xy_mode="center",
                                                                  z_strategy=self.pixel_converter.convert_z_auto)

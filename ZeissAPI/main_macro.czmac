@@ -162,11 +162,14 @@ class AcquisitionPipeline:
         return points_for_overview
 
 
-    def acquire_overview(self, overview_experiment, analysis_args=None, name=None):
+    def acquire_overview(self, overview_experiment, analysis_args=None, selection_args=None, name=None):
 
         """
         Method for loading, executing and saving the overview experiment. Activating the analysis of the results and
         reading the JSON with positions of the objects for the measurement from Python analysis.
+
+        param str selection_args: name of a preset in selection_config.json, deciding which of the
+        found objects are worth measuring, or None to measure all of them
         """
 
         log('Initializing overview experiment')
@@ -186,7 +189,7 @@ class AcquisitionPipeline:
         if analysis_args:
             args_overview = {'type': 'overview', 'file_path': overview_file_name,
                              'saving_path': overview_analysis_path, 'analysis_arguments': analysis_args,
-                             'is_FCS': False}
+                             'selection_arguments': selection_args, 'is_FCS': False}
 
             log("Initializing the overview image analysis: {}".format(args_overview))
             self.python_analysis_runner.run(**args_overview)
@@ -222,7 +225,14 @@ class AcquisitionPipeline:
             return
 
         if object_ids is None:
-            object_ids = list(self.measurements_objects.keys())
+            # The analysis side marks every object it found with 'selected'. Rejected ones stay in the
+            # JSON together with whatever was measured on them, they are simply not driven to.
+            object_ids = [obj_id for obj_id, obj in self.measurements_objects.items() if obj['selected']]
+
+            skipped = len(self.measurements_objects) - len(object_ids)
+
+            if skipped:
+                log("Object selection rejected {} of {} objects".format(skipped, len(self.measurements_objects)))
 
         log("Initialized capturing objects")
 
@@ -520,6 +530,22 @@ def validate_setup(setup):
                 "The {} preset '{}' has no 'chosen_analysis' key, so the analysis side would not "
                 "know which algorithm to run.".format(label, preset_name))
 
+    # The object selection is optional and lives in its own config file, but a preset that is
+    # named and then not found would only show up once the overview had been acquired
+    selection_name = setup['overview_selection']
+
+    if selection_name is not None:
+        selection_preset = selection_data.get(selection_name)
+
+        if selection_preset is None:
+            problems.append(
+                "The object selection preset '{}' is not in selection_config.json.".format(selection_name))
+
+        elif not selection_preset.get('chosen_selection'):
+            problems.append(
+                "The object selection preset '{}' has no 'chosen_selection' key, so the analysis "
+                "side would not know which algorithm to run.".format(selection_name))
+
     return problems
 
 
@@ -545,6 +571,7 @@ def show_problems(problems):
 
 
 preprocessing_data = CONFIG.preprocessing_config()
+selection_data = CONFIG.selection_config()
 
 
 def getshortfiles(filelist):
@@ -593,6 +620,8 @@ window.Initialize("Automated Acquisition")
 if finding_objects:
     window.AddDropDown('over_exp_name', 'Choose overview experiment:', experiments, 0)
     window.AddDropDown('over_analysis', 'Choose overview analysis:', preprocessing_data.keys(), 0)
+    window.AddDropDown('over_selection', 'Choose object selection for the found objects:',
+                       ["None"] + selection_data.keys(), 0)
     window.AddDropDown('vis_exp', 'Choose experiment for object visualization:', experiments, 0)
     window.AddDropDown('rean_xy_name', 'Choose reanalysis in xy:', ["None"] + preprocessing_data.keys(), 0)
 
@@ -659,6 +688,7 @@ setup = {
     'multiple_overviews': multiple_overviews,
     'overview_experiment': result_setup.GetValue('over_exp_name') if finding_objects else None,
     'overview_analysis': result_setup.GetValue('over_analysis') if finding_objects else None,
+    'overview_selection': none_or_value(result_setup.GetValue('over_selection')) if finding_objects else None,
     'visualization_experiment': result_setup.GetValue('vis_exp') if finding_objects else None,
     'reanalysis_xy': none_or_value(result_setup.GetValue('rean_xy_name')) if finding_objects else None,
     'z_experiment': none_or_value(result_setup.GetValue('z_exp_name')),
@@ -693,6 +723,7 @@ summary_text += "Multiple overviews mode: {}\n".format("Enabled" if setup['multi
 if setup['finding_objects']:
     summary_text += "\nOverview experiment: {}\n".format(setup['overview_experiment'])
     summary_text += "Overview analysis: {}\n".format(setup['overview_analysis'])
+    summary_text += "Object selection: {}\n".format(setup['overview_selection'])
     summary_text += "Object visualization experiment: {}\n".format(setup['visualization_experiment'])
     summary_text += "Reanalysis XY: {}\n".format(setup['reanalysis_xy'])
 
@@ -739,7 +770,8 @@ if setup['finding_objects']:
                 ZeissApiProcessor.move(point['position'])
 
                 pipeline.acquire_overview(overview_experiment=setup['overview_experiment'],
-                                          analysis_args=setup['overview_analysis'], name=point['name'])
+                                          analysis_args=setup['overview_analysis'],
+                                          selection_args=setup['overview_selection'], name=point['name'])
                 pipeline.capture_objects(name=point['name'])
 
             except Exception as error:
@@ -748,7 +780,8 @@ if setup['finding_objects']:
 
     else:
         pipeline.acquire_overview(overview_experiment=setup['overview_experiment'],
-                                  analysis_args=setup['overview_analysis'], name=None)
+                                  analysis_args=setup['overview_analysis'],
+                                  selection_args=setup['overview_selection'], name=None)
         pipeline.capture_objects(name=None)
 
 else:

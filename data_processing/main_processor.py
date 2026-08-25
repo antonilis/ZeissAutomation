@@ -51,14 +51,55 @@ else:
 
     print("Analyzing Image")
 
-    analysis_type = preprocessing_config[command_args['analysis_arguments']]
+    analysis_type = dict(preprocessing_config[command_args['analysis_arguments']])
+
+    # The object selection is the optional second stage. Without --selection_arguments nothing is
+    # added here and ZeissImageProcessor runs exactly as it did before that stage existed.
+    selection_preset_name = command_args.get('selection_arguments')
+
+    if selection_preset_name:
+
+        if 'selection_config' not in command_args:
+            raise ValueError(
+                "Missing --selection_config, which is needed to resolve the object selection preset "
+                "'{}'. It is the path to selection_config.json and is passed automatically by "
+                "PythonAnalysisRunner; supply it explicitly when running this script by "
+                "hand.".format(selection_preset_name))
+
+        print("[INFO] Reading object selection presets from: {}".format(command_args['selection_config']))
+
+        with open(command_args['selection_config'], 'r') as file:
+            selection_config = json.load(file)
+
+        if selection_preset_name not in selection_config:
+            raise ValueError(
+                "Unknown object selection preset: {}, please choose from {}".format(
+                    selection_preset_name, list(selection_config.keys())))
+
+        # A selection preset is flat, exactly like an analysis preset: chosen_selection names the
+        # class and everything else is handed to that class as its arguments
+        selection_preset = dict(selection_config[selection_preset_name])
+
+        if 'chosen_selection' not in selection_preset:
+            raise ValueError(
+                "The object selection preset '{}' has no 'chosen_selection' key, so there is no way "
+                "to tell which selection algorithm to run.".format(selection_preset_name))
+
+        analysis_type['chosen_selection'] = selection_preset.pop('chosen_selection')
+        analysis_type['selection_arguments'] = selection_preset
 
     obj = ZeissImageProcessor(command_args['file_path'], **analysis_type)
 
-    if command_args['type'] == 'reanalysis_xy' and len(obj.measurement_points) > 1:
-        print("Found multiple objects after reanalysis: {}".format(len(obj.measurement_points)))
-        closest_point = choose_the_closest_point(obj.measurement_points, obj.metadata["stage_position"])
-        obj.measurement_points = [closest_point]
+    if command_args['type'] == 'reanalysis_xy':
+        # Only objects the selection kept are candidates for the corrected position, otherwise the stage could be sent
+        # to something that was measured and rejected a moment earlier
+        selected_points = [p for p in obj.measurement_points if p['selected']]
+
+        if len(selected_points) > 1:
+            print("Found multiple objects after reanalysis: {}".format(len(selected_points)))
+            selected_points = [choose_the_closest_point(selected_points, obj.metadata["stage_position"])]
+
+        obj.measurement_points = selected_points
 
     obj.save_measurement_points(command_args['saving_path'])
 

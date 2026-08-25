@@ -22,6 +22,7 @@ class PythonAnalysisRunner:
         # The CPython side does not know where the ZEN runtime folder is, so the location
         # of preprocessing_config.json is handed to it with every call
         self.preprocessing_config = config.preprocessing_config_path
+        self.selection_config = config.selection_config_path
 
 
     def _make_args(self, **kwargs):
@@ -48,6 +49,7 @@ class PythonAnalysisRunner:
         # The location of the analysis presets travels with every call, so that the
         # CPython side never has to guess where the config folder is
         kwargs["preprocessing_config"] = self.preprocessing_config
+        kwargs["selection_config"] = self.selection_config
 
         proc = Process()
         proc.StartInfo.FileName = self.python

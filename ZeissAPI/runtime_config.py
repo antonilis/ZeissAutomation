@@ -17,6 +17,7 @@ import json
 CONFIG_DIR_NAME = "config"
 PATH_CONFIG_NAME = "path_config.json"
 PREPROCESSING_CONFIG_NAME = "preprocessing_config.json"
+SELECTION_CONFIG_NAME = "selection_config.json"
 
 # Fallback log file, used before path_config.json has been read and when it does not
 # name one. It is written next to the macros, in the same folder as the config, so that
@@ -61,6 +62,13 @@ def preprocessing_config_file():
     :return: str absolute path to preprocessing_config.json
     """
     return Path.Combine(config_dir(), PREPROCESSING_CONFIG_NAME)
+
+
+def selection_config_file():
+    """
+    :return: str absolute path to selection_config.json
+    """
+    return Path.Combine(config_dir(), SELECTION_CONFIG_NAME)
 
 
 def read_json(path):
@@ -147,6 +155,7 @@ class RuntimeConfig:
         # Passed to the CPython side on the command line, so that it does not have to
         # guess where the config folder is
         self.preprocessing_config_path = preprocessing_config_file()
+        self.selection_config_path = selection_config_file()
 
         log("Loaded path configuration from {}".format(self.config_path))
         log("Logging to {}".format(self.log_path))
@@ -157,3 +166,18 @@ class RuntimeConfig:
         :return: dict of preset name to analysis arguments
         """
         return read_json(self.preprocessing_config_path)
+
+    def selection_config(self):
+        """
+        Read the named object selection presets. The object selection is an optional second stage,
+        so a file that is not there means that there is nothing to choose from, not that the
+        configuration is broken: the macro then offers "None" alone and runs exactly as it did
+        before the second stage existed.
+        :return: dict of preset name to selection arguments, empty when the file does not exist
+        """
+        if not File.Exists(self.selection_config_path):
+            log("No object selection presets: {} does not exist".format(self.selection_config_path))
+
+            return {}
+
+        return read_json(self.selection_config_path)
