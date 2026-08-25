@@ -469,10 +469,15 @@ def validate_setup(setup):
             "Z reanalysis needs both an experiment and an analysis, or neither of them. The chosen "
             "experiment is {} and the chosen analysis is {}.".format(z_experiment, z_analysis))
 
-    if not setup['finding_objects'] and z_experiment is None:
+    # Without object finding the macro visits the overview points and does whatever was asked
+    # for at each of them. A Z reanalysis alone is enough, post-analysis experiments alone are
+    # enough, and so is both. Only asking for neither is pointless: the stage would drive from
+    # point to point without acquiring anything.
+    if not setup['finding_objects'] and z_experiment is None and not setup['post_experiments']:
         problems.append(
-            "With finding objects mode switched off the Z reanalysis is the only thing this macro "
-            "would do, so it cannot be left at None.")
+            "With finding objects mode switched off there has to be either a Z reanalysis or at "
+            "least one post-analysis experiment, otherwise this macro would only move the stage "
+            "from point to point without acquiring anything.")
 
     if setup['multiple_overviews']:
         points_path = Path.Combine(CONFIG.measurements, "points_for_overview.json")
@@ -481,6 +486,39 @@ def validate_setup(setup):
             problems.append(
                 "Multiple overviews mode needs the file {}. Run find_overview_positions.czmac "
                 "first, or switch the mode off.".format(points_path))
+
+        else:
+            try:
+                overview_points = read_json_file(points_path)
+            except Exception as error:
+                overview_points = None
+                problems.append("The overview points file {} could not be read: {}".format(points_path, error))
+
+            # An empty list would send the macro straight through every loop below without
+            # acquiring anything, and look like a run that simply finished very quickly
+            if overview_points is not None and not overview_points:
+                problems.append(
+                    "The overview points file {} contains no points. Run find_overview_positions.czmac "
+                    "again, or switch multiple overviews mode off.".format(points_path))
+
+    # A preset without chosen_analysis makes the analysis side fall back to a name that is not
+    # a registered algorithm, which only shows up once the overview has already been acquired
+    for label, preset_name in (("overview analysis", setup['overview_analysis']),
+                               ("XY reanalysis", setup['reanalysis_xy']),
+                               ("Z analysis", setup['z_analysis'])):
+        if preset_name is None:
+            continue
+
+        preset = preprocessing_data.get(preset_name)
+
+        if preset is None:
+            problems.append(
+                "The {} preset '{}' is not in preprocessing_config.json.".format(label, preset_name))
+
+        elif not preset.get('chosen_analysis'):
+            problems.append(
+                "The {} preset '{}' has no 'chosen_analysis' key, so the analysis side would not "
+                "know which algorithm to run.".format(label, preset_name))
 
     return problems
 
@@ -630,6 +668,10 @@ setup = {
     'post_experiments': selected_experiments,
 }
 
+# A Z reanalysis needs both halves, so the decision is made once here and everything below
+# reads it, instead of spelling the condition out again in each place that runs one.
+setup['z_reanalysis'] = setup['z_experiment'] is not None and setup['z_analysis'] is not None
+
 problems = validate_setup(setup)
 
 if adaptive_error:
@@ -675,6 +717,10 @@ if not result_summary or result_summary.HasCanceled:
 
 ################################## Actual Macro: initializing the AcquisitionPipeline with arguments from the GUI #######################################
 
+# Points that raised on the way. One bad well must not cost the rest of the plate, so the
+# failure is logged and the run carries on, and the names are repeated at the end.
+failed_points = []
+
 if setup['finding_objects']:
 
     pipeline = AcquisitionPipeline(CONFIG,
@@ -689,11 +735,16 @@ if setup['finding_objects']:
 
     if setup['multiple_overviews']:
         for point in pipeline.points_for_overview:
-            ZeissApiProcessor.move(point['position'])
+            try:
+                ZeissApiProcessor.move(point['position'])
 
-            pipeline.acquire_overview(overview_experiment=setup['overview_experiment'],
-                                      analysis_args=setup['overview_analysis'], name=point['name'])
-            pipeline.capture_objects(name=point['name'])
+                pipeline.acquire_overview(overview_experiment=setup['overview_experiment'],
+                                          analysis_args=setup['overview_analysis'], name=point['name'])
+                pipeline.capture_objects(name=point['name'])
+
+            except Exception as error:
+                failed_points.append(point['name'])
+                log("Point {} failed and was skipped: {}".format(point['name'], error))
 
     else:
         pipeline.acquire_overview(overview_experiment=setup['overview_experiment'],
@@ -710,24 +761,40 @@ else:
 
         for point in pipeline.points_for_overview:
 
-            ZeissApiProcessor.move(point['position'])
+            try:
+                ZeissApiProcessor.move(point['position'])
 
-            pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id, name=point['name'])
+                # The Z reanalysis is optional here: visiting the overview points and running the
+                # post-analysis experiments on each of them is a valid run on its own
+                if setup['z_reanalysis']:
+                    pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id, name=point['name'])
 
-            for experiment in setup['post_experiments']:
-                pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post',
-                                         name=point['name'], obj=None)
+                for experiment in setup['post_experiments']:
+                    pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post',
+                                             name=point['name'], obj=None)
+
+            except Exception as error:
+                failed_points.append(point['name'])
+                log("Point {} failed and was skipped: {}".format(point['name'], error))
 
             Zen.Application.Documents.RemoveAll()
 
     else:
 
-        pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id)
+        if setup['z_reanalysis']:
+            pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id)
 
         for experiment in setup['post_experiments']:
             pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post')
 
         Zen.Application.Documents.RemoveAll()  #
+
+
+if failed_points:
+    log("Run finished, {} point(s) were skipped after an error: {}".format(
+        len(failed_points), ", ".join(failed_points)))
+else:
+    log("Run finished without skipped points")
 
 </Text>
   <Author></Author>
