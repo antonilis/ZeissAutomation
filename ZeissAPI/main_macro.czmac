@@ -116,6 +116,9 @@ class AcquisitionPipeline:
 
     param RuntimeConfig config: configuration built by the macro. The pipeline never locates
     the config folder itself, it only passes this object on to its helpers.
+    param dict adaptive_experiment: already evaluated adaptive experiment, with the keys
+    'experiment' and 'function', or None. It arrives evaluated, so that a mistake in it is
+    reported before the stage moves rather than in the middle of a run.
     """
 
     def __init__(self,
@@ -240,10 +243,18 @@ class AcquisitionPipeline:
                 if self.reanalysis_dict.get('xy'):
                     self._perform_reanalysis_xy(obj_id, name)
 
-                # Reanalysis Z
+                # Reanalysis Z. Both halves are required: without an experiment there is nothing to
+                # acquire and load_experiment would be handed None, without an analysis there is
+                # nothing to read the corrected position from.
                 z_data = self.reanalysis_dict.get('z')
-                if z_data and (z_data.get('z_experiment') is not None or z_data.get('z_analysis') is not None):
+
+                if z_data and z_data.get('z_experiment') is not None and z_data.get('z_analysis') is not None:
                     self._perform_reanalysis_z(obj_id, name, obj)
+
+                elif z_data and (z_data.get('z_experiment') is not None or z_data.get('z_analysis') is not None):
+                    log("Skipping Z reanalysis for object {}: it needs both an experiment and an "
+                        "analysis, got experiment={} and analysis={}".format(
+                            obj_id, z_data.get('z_experiment'), z_data.get('z_analysis')))
 
             for exp_name in self.post_reanalysis_experiments:
                 log('Running experiment {} on object {}'.format(exp_name, obj_id, obj=obj))
@@ -325,16 +336,14 @@ class AcquisitionPipeline:
 
         if self.adaptive_experiment is not None:
 
-            adaptive_experiment = eval(self.adaptive_experiment)
+            if self.adaptive_experiment['experiment'] == exp_item:
+                log('Doing adaptive experiment {}'.format(self.adaptive_experiment))
 
-            if adaptive_experiment['experiment'] == exp_item:
-                log('Doing adaptive experiment {}'.format(adaptive_experiment))
-
-                fun = adaptive_experiment['function']
+                fun = self.adaptive_experiment['function']
 
                 fun(exp_item, obj_id, stage, obj, name)
 
-                log('Modified z experiment with {}'.format(adaptive_experiment))
+                log('Modified z experiment with {}'.format(self.adaptive_experiment))
 
         ZeissApiProcessor.load_experiment(exp_item)
         ZeissApiProcessor.execute_current_experiment()
@@ -404,6 +413,96 @@ def fcs_zscan(exp_item, obj_id, stage, obj, name):
     exp_obj.SetActive()
 
 
+################################## Reading and checking the GUI selections #######################################
+# Everything the user can get wrong is caught here, before the pipeline is built and before
+# anything moves. A run started from this macro is unattended, so a bad combination of
+# settings that only surfaces halfway through costs an experiment and a plate position.
+
+
+def none_or_value(x):
+    return None if x == "None" else x
+
+
+def read_adaptive_experiment(raw_text):
+    """
+    The adaptive experiment is typed in as free text and has to be evaluated. It is done here,
+    once, so that a mistake is reported in a dialog instead of stopping the run after the stage
+    has already moved and an experiment has already been acquired.
+    :param str raw_text: contents of the adaptive experiment text box
+    :return: tuple (adaptive experiment dict or None, error message or None)
+    """
+    if none_or_value(raw_text) is None:
+        return None, None
+
+    try:
+        adaptive_experiment = eval(raw_text)
+    except Exception as error:
+        return None, "Adaptive experiment could not be evaluated: {}".format(error)
+
+    if not isinstance(adaptive_experiment, dict):
+        return None, "Adaptive experiment has to be a dictionary, for example " \
+                     "{'experiment': 'FCS_zscan', 'function': fcs_zscan}"
+
+    for key in ("experiment", "function"):
+        if key not in adaptive_experiment:
+            return None, "Adaptive experiment is missing the '{}' key".format(key)
+
+    if not callable(adaptive_experiment["function"]):
+        return None, "The 'function' of the adaptive experiment is not callable"
+
+    return adaptive_experiment, None
+
+
+def validate_setup(setup):
+    """
+    Collects everything that is wrong with the chosen combination of settings.
+    :param dict setup: the selections read from the GUI
+    :return: list of messages, empty when the setup can be run
+    """
+    problems = []
+
+    z_experiment = setup['z_experiment']
+    z_analysis = setup['z_analysis']
+
+    if (z_experiment is None) != (z_analysis is None):
+        problems.append(
+            "Z reanalysis needs both an experiment and an analysis, or neither of them. The chosen "
+            "experiment is {} and the chosen analysis is {}.".format(z_experiment, z_analysis))
+
+    if not setup['finding_objects'] and z_experiment is None:
+        problems.append(
+            "With finding objects mode switched off the Z reanalysis is the only thing this macro "
+            "would do, so it cannot be left at None.")
+
+    if setup['multiple_overviews']:
+        points_path = Path.Combine(CONFIG.measurements, "points_for_overview.json")
+
+        if not File.Exists(points_path):
+            problems.append(
+                "Multiple overviews mode needs the file {}. Run find_overview_positions.czmac "
+                "first, or switch the mode off.".format(points_path))
+
+    return problems
+
+
+def show_problems(problems):
+    """
+    Shows what is wrong with the setup and ends the macro. Nothing has moved at this point,
+    which is the whole reason these checks run before the pipeline is built.
+    :param list problems: messages to show
+    :return: None
+    """
+    log("Setup rejected: {}".format(problems))
+
+    problems_window = ZenWindow()
+    problems_window.Initialize("Cannot start")
+    problems_window.AddMultiLineTextBox('problems_box', 'Fix these and run the macro again:',
+                                        "\n\n".join(problems))
+    problems_window.Show()
+
+    raise SystemExit
+
+
 ################################## Code for generating GUI #######################################
 
 
@@ -427,20 +526,27 @@ docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocum
 expfiles = Directory.GetFiles(Path.Combine(docfolder, 'Experiment Setups'), '*.czexp')
 experiments = getshortfiles(expfiles)
 
+# Without any experiment the dropdowns below would have nothing to offer, and every
+# GetValue on them would hand None to Zen.Acquisition.Experiments.GetByName
+if not experiments:
+    show_problems(["No .czexp experiments were found in the ZEN Experiment Setups folder, "
+                   "so there is nothing for this macro to run."])
+
 # === window 1: choosing work modes ===
 window = ZenWindow()
 window.Initialize("Automated Acquisition")
 window.Title = "Automated Acquisition"
 
 window.AddCheckbox('finding_objects_mode', 'Finding objects mode:', True)
-window.AddCheckbox('multiple_overiews', 'Multiple overviews mode:', True)
+window.AddCheckbox('multiple_overviews_mode', 'Multiple overviews mode:', True)
 
 result_mode = window.Show()
-finding_objects = result_mode.GetValue('finding_objects_mode')
-multiple_overviews = result_mode.GetValue('multiple_overiews')
 
 if result_mode.HasCanceled:
     raise SystemExit
+
+finding_objects = result_mode.GetValue('finding_objects_mode')
+multiple_overviews = result_mode.GetValue('multiple_overviews_mode')
 
 # === window 2: choosing experiments and analysis, the analysis arguments are specified in the preprocessing_config===
 window.ClearContent()
@@ -457,7 +563,9 @@ window.AddDropDown('z_analysis', 'Choose z-reanalysis:', ["None"] + preprocessin
 window.AddCheckbox('is_FCS', 'Is z analysis experiment a FCS experiments:', True)
 
 default_adaptive = 'None'
-window.AddTextBox('adaptive_experiment', 'Adaptive experiment:', default_adaptive)
+window.AddTextBox('adaptive_experiment',
+                  "Adaptive experiment, e.g. {'experiment': 'FCS_zscan', 'function': fcs_zscan}:",
+                  default_adaptive)
 
 result_setup = window.Show()
 
@@ -481,15 +589,14 @@ while not done:
     window.AddDropDown('action', 'What next?', ['Add another', 'Done', 'Clear all'], 0)
 
     result_post = window.Show()
-    if not result_post:
-        break  # user clicked Cancel (X)
+
+    # Cancelling ends the macro, the same as in the windows above. Continuing with a half
+    # filled list would silently run something the user was in the middle of changing.
+    if not result_post or result_post.HasCanceled:
+        raise SystemExit
 
     action = result_post.GetValue('action')
     new_exp = result_post.GetValue('post_exp_name')
-
-    if result_post.HasCanceled:
-        done = True
-        raise SystemExit
 
     if action == 'Add another':
         if new_exp != "None" and new_exp not in selected_experiments:
@@ -503,78 +610,103 @@ while not done:
             selected_experiments.append(new_exp)
         done = True
 
+# === collecting the selections into one place and checking them ===
+# Everything below reads this dictionary and nothing calls GetValue again, so the summary
+# window cannot end up describing something other than what the pipeline is given.
+
+adaptive_experiment, adaptive_error = read_adaptive_experiment(result_setup.GetValue('adaptive_experiment'))
+
+setup = {
+    'finding_objects': finding_objects,
+    'multiple_overviews': multiple_overviews,
+    'overview_experiment': result_setup.GetValue('over_exp_name') if finding_objects else None,
+    'overview_analysis': result_setup.GetValue('over_analysis') if finding_objects else None,
+    'visualization_experiment': result_setup.GetValue('vis_exp') if finding_objects else None,
+    'reanalysis_xy': none_or_value(result_setup.GetValue('rean_xy_name')) if finding_objects else None,
+    'z_experiment': none_or_value(result_setup.GetValue('z_exp_name')),
+    'z_analysis': none_or_value(result_setup.GetValue('z_analysis')),
+    'is_FCS': result_setup.GetValue('is_FCS'),
+    'adaptive_experiment': adaptive_experiment,
+    'post_experiments': selected_experiments,
+}
+
+problems = validate_setup(setup)
+
+if adaptive_error:
+    problems.insert(0, adaptive_error)
+
+if problems:
+    show_problems(problems)
+
+log("Setup accepted: {}".format(setup))
+
 # === window 4: Summarry for user===
 window = ZenWindow()
 window.Initialize("Summary of selections")
 
 summary_text = ""
-summary_text += "Finding objects mode: {}\n".format("Enabled" if finding_objects else "Disabled")
-summary_text += "Multiple overviews mode: {}\n".format("Enabled" if multiple_overviews else "Disabled")
+summary_text += "Finding objects mode: {}\n".format("Enabled" if setup['finding_objects'] else "Disabled")
+summary_text += "Multiple overviews mode: {}\n".format("Enabled" if setup['multiple_overviews'] else "Disabled")
 
-if finding_objects:
-    summary_text += "\nOverview experiment: {}\n".format(result_setup.GetValue('over_exp_name'))
-    summar_text = "\nObject visualization experiments: {}\n".format(result_setup.GetValue('vis_exp'))
-    summary_text += "Overview analysis: {}\n".format(result_setup.GetValue('over_analysis'))
-    summary_text += "Reanalysis XY: {}\n".format(result_setup.GetValue('rean_xy_name'))
-    summary_text += "Z experiment: {}\n".format(result_setup.GetValue('z_exp_name'))
-    summary_text += "Z analysis: {}\n".format(result_setup.GetValue('z_analysis'))
-    summary_text += "Is z experiment a FCS?: {}\n".format(result_setup.GetValue('is_FCS'))
-else:
-    summary_text += "\nZ experiment: {}\n".format(result_setup.GetValue('z_exp_name'))
-    summary_text += "Z analysis: {}\n".format(result_setup.GetValue('z_analysis'))
+if setup['finding_objects']:
+    summary_text += "\nOverview experiment: {}\n".format(setup['overview_experiment'])
+    summary_text += "Overview analysis: {}\n".format(setup['overview_analysis'])
+    summary_text += "Object visualization experiment: {}\n".format(setup['visualization_experiment'])
+    summary_text += "Reanalysis XY: {}\n".format(setup['reanalysis_xy'])
 
-if selected_experiments:
-    summary_text += "\nPost-analysis experiments:\n" + "\n".join(selected_experiments)
+summary_text += "\nZ experiment: {}\n".format(setup['z_experiment'])
+summary_text += "Z analysis: {}\n".format(setup['z_analysis'])
+summary_text += "Is z experiment a FCS?: {}\n".format(setup['is_FCS'])
+summary_text += "Adaptive experiment: {}\n".format(setup['adaptive_experiment'])
+
+if setup['post_experiments']:
+    summary_text += "\nPost-analysis experiments:\n" + "\n".join(setup['post_experiments'])
 else:
     summary_text += "\nNo post-analysis experiments selected."
 
 window.AddMultiLineTextBox('summary_box', 'Summary:', summary_text)
-window.Show()
+
+result_summary = window.Show()
+
+# This is the last point at which the run can still be called off
+if not result_summary or result_summary.HasCanceled:
+    raise SystemExit
 
 
 ################################## Actual Macro: initializing the AcquisitionPipeline with arguments from the GUI #######################################
 
-def none_or_value(x):
-    return None if x == "None" else x
-
-
-finding_objects = result_mode.GetValue('finding_objects_mode')
-multiple_overviews = result_mode.GetValue('multiple_overiews')
-
-if finding_objects:
+if setup['finding_objects']:
 
     pipeline = AcquisitionPipeline(CONFIG,
-                                   object_visualization_experiment=result_setup.GetValue('vis_exp'),
-                                   reanalysis_dict={'xy': none_or_value(result_setup.GetValue('rean_xy_name')),
-                                                    'z': {'z_experiment': none_or_value(
-                                                        result_setup.GetValue('z_exp_name')),
-                                                          'z_analysis': none_or_value(
-                                                              result_setup.GetValue('z_analysis')),
-                                                          'is_FCS': result_setup.GetValue('is_FCS')}},
-                                   post_reanalysis_experiments=selected_experiments,
-                                   adaptive_experiment=none_or_value(result_setup.GetValue('adaptive_experiment'))
+                                   object_visualization_experiment=setup['visualization_experiment'],
+                                   reanalysis_dict={'xy': setup['reanalysis_xy'],
+                                                    'z': {'z_experiment': setup['z_experiment'],
+                                                          'z_analysis': setup['z_analysis'],
+                                                          'is_FCS': setup['is_FCS']}},
+                                   post_reanalysis_experiments=setup['post_experiments'],
+                                   adaptive_experiment=setup['adaptive_experiment']
                                    )
 
-    if multiple_overviews:
+    if setup['multiple_overviews']:
         for point in pipeline.points_for_overview:
             ZeissApiProcessor.move(point['position'])
 
-            pipeline.acquire_overview(overview_experiment=result_setup.GetValue('over_exp_name'),
-                                      analysis_args=result_setup.GetValue('over_analysis'), name=point['name'])
+            pipeline.acquire_overview(overview_experiment=setup['overview_experiment'],
+                                      analysis_args=setup['overview_analysis'], name=point['name'])
             pipeline.capture_objects(name=point['name'])
 
     else:
-        pipeline.acquire_overview(overview_experiment=result_setup.GetValue('over_exp_name'),
-                                  analysis_args=result_setup.GetValue('over_analysis'), name=None)
+        pipeline.acquire_overview(overview_experiment=setup['overview_experiment'],
+                                  analysis_args=setup['overview_analysis'], name=None)
         pipeline.capture_objects(name=None)
 
 else:
     pipeline = AcquisitionPipeline(CONFIG,
-        reanalysis_dict={'z': {'z_experiment': none_or_value(result_setup.GetValue('z_exp_name')),
-                               'z_analysis': none_or_value(result_setup.GetValue('z_analysis')),
-                               'is_FCS': result_setup.GetValue('is_FCS')}},
+        reanalysis_dict={'z': {'z_experiment': setup['z_experiment'],
+                               'z_analysis': setup['z_analysis'],
+                               'is_FCS': setup['is_FCS']}},
     )
-    if multiple_overviews:
+    if setup['multiple_overviews']:
 
         for point in pipeline.points_for_overview:
 
@@ -582,7 +714,7 @@ else:
 
             pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id, name=point['name'])
 
-            for experiment in selected_experiments:
+            for experiment in setup['post_experiments']:
                 pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post',
                                          name=point['name'], obj=None)
 
@@ -592,7 +724,7 @@ else:
 
         pipeline._perform_reanalysis_z(obj_id=pipeline.overview_id)
 
-        for experiment in selected_experiments:
+        for experiment in setup['post_experiments']:
             pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post')
 
         Zen.Application.Documents.RemoveAll()  #
