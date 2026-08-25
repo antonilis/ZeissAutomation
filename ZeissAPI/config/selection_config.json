@@ -1,0 +1,2 @@
+{"green_membrane": {"chosen_selection": "ChannelIntensity", "channel": 1, "min_value": 120},
+  "bright_green_only": {"chosen_selection": "ChannelIntensity", "channel": 1, "min_value": 200, "statistic": "median"}}
