@@ -7,7 +7,15 @@
 import json
 import time
 import uuid
+import sys
 from System.IO import Directory, Path, File
+
+# ZEN keeps its Python engine alive between macro runs, so a module imported once stays in
+# sys.modules and an edited file in zen_lib goes unnoticed until ZEN itself is restarted.
+# Dropping the package here costs milliseconds and makes what runs always be what is on disk,
+# which is also what stops a half finished copy of the folder from looking like it worked.
+for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
+    del sys.modules[_cached]
 
 from zen_lib.runtime_config import RuntimeConfig, log, read_json as read_json_file
 from zen_lib.execute_python import PythonAnalysisRunner
