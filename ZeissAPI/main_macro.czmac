@@ -124,16 +124,16 @@ class AcquisitionPipeline:
 
     param RuntimeConfig config: configuration built by the macro. The pipeline never locates
     the config folder itself, it only passes this object on to its helpers.
-    param dict adaptive_experiment: already evaluated adaptive experiment, with the keys
-    'experiment' and 'function', or None. It arrives evaluated, so that a mistake in it is
-    reported before the stage moves rather than in the middle of a run.
+    param dict adaptive_experiments: experiment name to the function that rewrites it,
+    already resolved. It arrives resolved, so that a mistake in it is reported before the
+    stage moves rather than in the middle of a run.
     """
 
     def __init__(self,
                  config,
                  object_visualization_experiment=None,
                  reanalysis_dict=None,
-                 post_reanalysis_experiments=None, adaptive_experiment=None):
+                 post_reanalysis_experiments=None, adaptive_experiments=None):
 
         self.config = config
 
@@ -142,7 +142,7 @@ class AcquisitionPipeline:
         self.object_visualization_experiment = object_visualization_experiment
         self.reanalysis_dict = reanalysis_dict
         self.post_reanalysis_experiments = post_reanalysis_experiments or []
-        self.adaptive_experiment = adaptive_experiment
+        self.adaptive_experiments = adaptive_experiments or {}
 
         # Initializing objects for the directories management for reading/saving the results and for initializing python
         # with the arguments. Both receive the already loaded configuration.
@@ -156,12 +156,12 @@ class AcquisitionPipeline:
 
         # Said out loud, because an adaptive experiment that was never armed is otherwise
         # invisible: it simply does not run, and leaves nothing behind explaining why
-        if self.adaptive_experiment is None:
-            log("Pipeline built with no adaptive experiment")
+        if not self.adaptive_experiments:
+            log("Pipeline built with no adaptive experiments")
         else:
-            log("Pipeline built with adaptive experiment {} rewriting {}".format(
-                self.adaptive_experiment['function'].__name__,
-                self.adaptive_experiment['experiment']))
+            log("Pipeline built with adaptive experiments: {}".format(", ".join(
+                ["{} rewriting {}".format(function.__name__, experiment)
+                 for experiment, function in sorted(self.adaptive_experiments.items())])))
 
     def get_overview_points(self):
         """
@@ -357,20 +357,18 @@ class AcquisitionPipeline:
     def _run_experiment(self, obj_id, exp_item, stage, name=None, obj=None):
         """
         Function responsible for loading, executing experiments and saving the results in correct directory with
-        proper name. It also initializes the adaptive experiment: changes the chosen experiment whenever it is being
-        called by the user specified function, takes as arguments the experiments and object properties.
+        proper name. If an adaptive function is paired with this experiment it runs first and rewrites
+        it, using the properties of the object the experiment is about to be run on.
         """
 
-        if self.adaptive_experiment is not None:
+        adaptive = self.adaptive_experiments.get(exp_item)
 
-            if self.adaptive_experiment['experiment'] == exp_item:
-                log('Doing adaptive experiment {}'.format(self.adaptive_experiment))
+        if adaptive is not None:
+            log('Doing adaptive experiment {} on {}'.format(adaptive.__name__, exp_item))
 
-                fun = self.adaptive_experiment['function']
+            adaptive(exp_item, obj_id, stage, obj, name)
 
-                fun(exp_item, obj_id, stage, obj, name)
-
-                log('Modified z experiment with {}'.format(self.adaptive_experiment))
+            log('Rewrote experiment {} with {}'.format(exp_item, adaptive.__name__))
 
         ZeissApiProcessor.load_experiment(exp_item)
         ZeissApiProcessor.execute_current_experiment()
@@ -462,30 +460,37 @@ def none_or_value(x):
     return None if x == "None" else x
 
 
-def build_adaptive_experiment(function_name, target_experiment):
+def build_adaptive_experiments(pairs):
     """
-    Puts the adaptive experiment together from the two names the GUI offers. This replaces the free
-    text box that used to be evaluated here: a plugin is chosen by name, so there is nothing left to
-    parse and nothing that can be mistyped.
-    :param str function_name: name of a function registered by a plugin, or None
-    :param str target_experiment: name of the experiment that function rewrites, or None
-    :return: tuple (adaptive experiment dict or None, error message or None)
+    Resolves the pairs the GUI collected into the mapping the pipeline uses: experiment name to
+    the function that rewrites it. Keyed by the experiment, because two functions rewriting the
+    same experiment would fight over it and the second would quietly win.
+    :param list pairs: list of [function name, experiment name] pairs, possibly empty
+    :return: tuple (dict of experiment name to function, error message or None)
     """
-    if function_name is None:
-        return None, None
+    adaptive_experiments = {}
 
-    function = ADAPTIVE_FUNCTIONS.get(function_name)
+    for pair in pairs:
+        function_name, target_experiment = pair[0], pair[1]
 
-    if function is None:
-        return None, "The adaptive function '{}' was not loaded from {}. Available: {}".format(
-            function_name, CONFIG.adaptive_path, ", ".join(sorted(ADAPTIVE_FUNCTIONS)) or "none")
+        function = ADAPTIVE_FUNCTIONS.get(function_name)
 
-    if target_experiment is None:
-        return None, "The adaptive function '{}' was chosen without an experiment to rewrite. " \
-                     "Choose the experiment it applies to, or set the function back to None.".format(
-                         function_name)
+        if function is None:
+            return {}, "The adaptive function '{}' was not loaded from {}. Available: {}".format(
+                function_name, CONFIG.adaptive_path, ", ".join(sorted(ADAPTIVE_FUNCTIONS)) or "none")
 
-    return {'experiment': target_experiment, 'function': function}, None
+        if target_experiment is None:
+            return {}, "The adaptive function '{}' has no experiment to rewrite.".format(function_name)
+
+        if target_experiment in adaptive_experiments:
+            return {}, "The experiment '{}' is paired with two adaptive functions, '{}' and " \
+                       "'{}'. Only one function can rewrite an experiment.".format(
+                           target_experiment,
+                           adaptive_experiments[target_experiment].__name__, function_name)
+
+        adaptive_experiments[target_experiment] = function
+
+    return adaptive_experiments, None
 
 
 def validate_setup(setup):
@@ -581,8 +586,7 @@ def validate_setup(setup):
 
     named_experiments += [("post-analysis", name) for name in setup['post_experiments']]
 
-    if setup['adaptive_experiment'] is not None:
-        named_experiments.append(("adaptive", setup['adaptive_experiment']['experiment']))
+    named_experiments += [("adaptive", experiment) for experiment in setup['adaptive_experiments']]
 
     for label, experiment_name in named_experiments:
         if experiment_name is not None and experiment_name not in experiments:
@@ -598,7 +602,7 @@ def validate_setup(setup):
 REQUIRED_SETUP_KEYS = ('finding_objects', 'multiple_overviews', 'overview_experiment',
                        'overview_analysis', 'overview_selection', 'visualization_experiment',
                        'reanalysis_xy', 'z_experiment', 'z_analysis', 'is_FCS',
-                       'post_experiments', 'adaptive_function', 'adaptive_target')
+                       'post_experiments', 'adaptive_pairs')
 
 
 def load_setup(path):
@@ -623,12 +627,11 @@ def load_setup(path):
              "version of this macro. Run once without loading it and it will be written "
              "again.".format(path, ", ".join(missing))])
 
-    # A function cannot be written to a file, so the saved setup names the plugin instead, and the
-    # adaptive experiment is put together again here from the same two names the dropdowns give
-    adaptive_experiment, adaptive_error = build_adaptive_experiment(
-        setup['adaptive_function'], setup['adaptive_target'])
+    # Functions cannot be written to a file, so the saved setup names the plugins instead and the
+    # pairs are resolved again here, exactly as they are when they come from the dropdowns
+    adaptive_experiments, adaptive_error = build_adaptive_experiments(setup['adaptive_pairs'])
 
-    setup['adaptive_experiment'] = adaptive_experiment
+    setup['adaptive_experiments'] = adaptive_experiments
 
     return setup, adaptive_error
 
@@ -636,14 +639,14 @@ def load_setup(path):
 def save_setup(path, setup):
     """
     Records the confirmed settings, so that the next run can start from them. The evaluated
-    adaptive experiment is left out because it holds a function; 'adaptive_function' and
-    'adaptive_target', which name it, are saved in its place.
+    adaptive experiments are left out because they hold functions; 'adaptive_pairs', which names
+    them, is saved in their place.
     :param str path: full path to write to
     :param dict setup: the confirmed selections
     :return: None
     """
     saveable = dict(setup)
-    saveable.pop('adaptive_experiment', None)
+    saveable.pop('adaptive_experiments', None)
 
     with open(path, "w") as file:
         json.dump(saveable, file, indent=2)
@@ -752,10 +755,7 @@ else:
     window.AddDropDown('z_analysis', 'Choose z-reanalysis:', ["None"] + processing_data.keys(), 0)
     window.AddCheckbox('is_FCS', 'Is z analysis experiment a FCS experiments:', True)
 
-    window.AddDropDown('adaptive_function', 'Adaptive experiment function:',
-                       ["None"] + sorted(ADAPTIVE_FUNCTIONS.keys()), 0)
-    window.AddDropDown('adaptive_target', 'Experiment the adaptive function rewrites:',
-                       ["None"] + experiments, 0)
+    window.AddCheckbox('use_adaptive', 'Use adaptive experiments:', False)
 
     result_setup = window.Show()
 
@@ -800,15 +800,88 @@ else:
                 selected_experiments.append(new_exp)
             done = True
 
+    # === window 4: pairing adaptive functions with the experiments they rewrite ===
+    # Shown only when asked for, so a run without adaptive experiments costs no extra clicks.
+    # The experiments offered are the ones this run will actually execute: pairing a function
+    # with an experiment that never runs does nothing and says nothing, and that silence has
+    # already cost an afternoon once.
+
+    adaptive_pairs = []
+    adaptive_note = ""
+
+    if result_setup.GetValue('use_adaptive'):
+        run_experiments = []
+
+        candidates = []
+
+        if finding_objects:
+            candidates.append(result_setup.GetValue('vis_exp'))
+
+        candidates.append(none_or_value(result_setup.GetValue('z_exp_name')))
+        candidates += selected_experiments
+
+        for candidate in candidates:
+            if candidate is not None and candidate not in run_experiments:
+                run_experiments.append(candidate)
+
+        if not run_experiments:
+            log("Adaptive experiments were asked for, but this run executes no experiments")
+
+        adaptive_done = not run_experiments
+
+        while not adaptive_done:
+            window = ZenWindow()
+            window.Initialize("Adaptive experiments")
+
+            window.AddDropDown('adaptive_function', 'Adaptive function:',
+                               ["None"] + sorted(ADAPTIVE_FUNCTIONS.keys()), 0)
+            window.AddDropDown('adaptive_target', 'Applies to experiment:',
+                               ["None"] + run_experiments, 0)
+
+            paired_text = "\n".join(["{} -> {}".format(pair[0], pair[1]) for pair in adaptive_pairs])
+            window.AddMultiLineTextBox('chosen_pairs', 'Currently paired:',
+                                       (paired_text or "None yet") + adaptive_note)
+
+            window.AddDropDown('action', 'What next?', ['Add another', 'Done', 'Clear all'], 0)
+
+            result_adaptive = window.Show()
+
+            if not result_adaptive or result_adaptive.HasCanceled:
+                raise SystemExit
+
+            action = result_adaptive.GetValue('action')
+            new_function = none_or_value(result_adaptive.GetValue('adaptive_function'))
+            new_target = none_or_value(result_adaptive.GetValue('adaptive_target'))
+
+            adaptive_note = ""
+
+            if action == 'Clear all':
+                adaptive_pairs = []
+
+            else:
+                # Done takes whatever is selected as well, so one pair costs one click. A half
+                # filled pair is refused out loud rather than guessed at.
+                if new_function is None and new_target is None:
+                    pass
+
+                elif new_function is None or new_target is None:
+                    adaptive_note = "\n\nA pair needs both a function and an experiment."
+
+                elif new_target in [pair[1] for pair in adaptive_pairs]:
+                    adaptive_note = "\n\n{} is already paired. One function per experiment.".format(
+                        new_target)
+
+                else:
+                    adaptive_pairs.append([new_function, new_target])
+
+                if action == 'Done':
+                    adaptive_done = True
+
     # === collecting the selections into one place and checking them ===
     # Everything below reads this dictionary and nothing calls GetValue again, so the summary
     # window cannot end up describing something other than what the pipeline is given.
 
-    # Two names instead of a line of code to evaluate: the plugin, and the experiment it rewrites
-    adaptive_function = none_or_value(result_setup.GetValue('adaptive_function'))
-    adaptive_target = none_or_value(result_setup.GetValue('adaptive_target'))
-
-    adaptive_experiment, adaptive_error = build_adaptive_experiment(adaptive_function, adaptive_target)
+    adaptive_experiments, adaptive_error = build_adaptive_experiments(adaptive_pairs)
 
     setup = {
         'finding_objects': finding_objects,
@@ -821,9 +894,8 @@ else:
         'z_experiment': none_or_value(result_setup.GetValue('z_exp_name')),
         'z_analysis': none_or_value(result_setup.GetValue('z_analysis')),
         'is_FCS': result_setup.GetValue('is_FCS'),
-        'adaptive_experiment': adaptive_experiment,
-        'adaptive_function': adaptive_function,
-        'adaptive_target': adaptive_target,
+        'adaptive_experiments': adaptive_experiments,
+        'adaptive_pairs': adaptive_pairs,
         'post_experiments': selected_experiments,
     }
 
@@ -841,7 +913,7 @@ if problems:
 
 log("Setup accepted: {}".format(setup))
 
-# === window 4: Summarry for user===
+# === window 5: Summarry for user===
 window = ZenWindow()
 window.Initialize("Summary of selections")
 
@@ -863,8 +935,14 @@ if setup['finding_objects']:
 summary_text += "\nZ experiment: {}\n".format(setup['z_experiment'])
 summary_text += "Z analysis: {}\n".format(setup['z_analysis'])
 summary_text += "Is z experiment a FCS?: {}\n".format(setup['is_FCS'])
-summary_text += "Adaptive experiment: {} rewriting {}\n".format(
-    setup['adaptive_function'], setup['adaptive_target'])
+if setup['adaptive_pairs']:
+    summary_text += "Adaptive experiments:\n"
+
+    for pair in setup['adaptive_pairs']:
+        summary_text += "    {} rewriting {}\n".format(pair[0], pair[1])
+
+else:
+    summary_text += "Adaptive experiments: none\n"
 
 if setup['post_experiments']:
     summary_text += "\nPost-analysis experiments:\n" + "\n".join(setup['post_experiments'])
@@ -904,7 +982,7 @@ if setup['finding_objects']:
                                                           'z_analysis': setup['z_analysis'],
                                                           'is_FCS': setup['is_FCS']}},
                                    post_reanalysis_experiments=setup['post_experiments'],
-                                   adaptive_experiment=setup['adaptive_experiment']
+                                   adaptive_experiments=setup['adaptive_experiments']
                                    )
 
     if setup['multiple_overviews']:
@@ -932,7 +1010,7 @@ else:
         reanalysis_dict={'z': {'z_experiment': setup['z_experiment'],
                                'z_analysis': setup['z_analysis'],
                                'is_FCS': setup['is_FCS']}},
-        adaptive_experiment=setup['adaptive_experiment'],
+        adaptive_experiments=setup['adaptive_experiments'],
     )
     if setup['multiple_overviews']:
 
