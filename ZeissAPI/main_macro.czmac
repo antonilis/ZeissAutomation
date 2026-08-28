@@ -404,6 +404,16 @@ def load_adaptive_functions(folder):
     Reads every plugin in the adaptive folder and collects the functions it registers. A file that
     cannot be run is logged and skipped, so that one broken plugin cannot stop an acquisition which
     does not use it.
+
+    The plugins are run in THIS macro's own global namespace, not in a copy of it. That is what
+    "the same as pasting the text in here" has to mean literally: ZEN binds part of its API to the
+    scope of the macro itself, and a function whose __globals__ is a separate dictionary does not
+    get those members - GetByName then hands back an experiment without
+    ClearExperimentRegionsAndPositions and the rest of the advanced set.
+
+    The price is that a plugin can shadow a name this macro needs. Anything it overwrites is named
+    in the log, instead of surfacing much later as something inexplicable.
+
     :param str folder: full path to the folder holding the plugin files
     :return: dict of function name to function
     """
@@ -423,12 +433,11 @@ def load_adaptive_functions(folder):
 
         return functions
 
-    # Everything a plugin may need. A plugin imports nothing and is handed these for free.
-    shared = {'Zen': Zen, 'ZenWindow': ZenWindow, 'ZeissApiProcessor': ZeissApiProcessor,
-              'PathManager': PathManager, 'PythonAnalysisRunner': PythonAnalysisRunner,
-              'CONFIG': CONFIG, 'log': log, 'json': json, 'time': time, 'uuid': uuid,
-              'Directory': Directory, 'Path': Path, 'File': File,
-              'register_adaptive': register_adaptive}
+    # No curated list of what a plugin is allowed to see: sharing this namespace means it sees
+    # whatever the macro sees, including the names defined further down, which exist by the time
+    # a plugin is actually called. register_adaptive is the only name that is not here already.
+    namespace = globals()
+    namespace['register_adaptive'] = register_adaptive
 
     for file_path in Directory.GetFiles(folder, "*.py"):
 
@@ -436,12 +445,22 @@ def load_adaptive_functions(folder):
         if Path.GetFileName(file_path).startswith("_"):
             continue
 
+        before = dict(namespace)
+
         try:
-            # A copy per plugin, so that one file cannot leave anything behind for the next
-            execfile(file_path, dict(shared))
+            execfile(file_path, namespace)
 
         except Exception as error:
             log("Adaptive experiment {} could not be loaded: {}".format(file_path, error))
+
+            continue
+
+        shadowed = [name for name in before
+                    if name in namespace and namespace[name] is not before[name]]
+
+        if shadowed:
+            log("Adaptive experiment {} overwrote names this macro uses: {}".format(
+                file_path, ", ".join(sorted(shadowed))))
 
     log("Loaded adaptive experiments: {}".format(", ".join(sorted(functions)) or "none"))
 
