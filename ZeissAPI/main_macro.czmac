@@ -399,14 +399,19 @@ class AcquisitionPipeline:
 # here, only done by the code instead of by hand.
 
 
-# Adaptive experiments are loaded here, at the top level of this macro, with a bare exec and no
-# explicit namespace. Both details are deliberate: ZEN only gives part of its API to code that
-# is in the macro itself, and a bare exec at this level is the closest a file on disk can get to
-# having its text pasted right here - the names it defines land in this macro's own scope rather
-# than in a dictionary handed to it. execfile and exec-with-a-namespace are NOT the same thing.
+# Adaptive experiments are read from their files and run here, at the top level of this macro.
 #
-# If this still does not give a plugin the full experiment API, the answer is the build step:
-# generate the .czmac with the plugin sources inlined, so the code really is in the macro.
+# The experiment editing members - ClearExperimentRegionsAndPositions, AddSinglePosition and
+# about twenty more - are .NET EXTENSION METHODS on ZenExperiment, declared in
+# Zeiss.Micro.LM.Scripting. IronPython only surfaces extension methods in a compilation unit
+# that imported their namespace, and ZEN does that when it compiles this macro. A plugin is
+# compiled separately, gets its own module context, and therefore sees 71 members instead of
+# 96 - the same object, the same type, the same globals, and no way to tell from the outside.
+#
+# The three lines below are prepended to every plugin so that its own compilation unit imports
+# them too. This is what makes an adaptive experiment work from a .py file at all. Measured on
+# the instrument: without it a probe saw 71 members, with it 95.
+PLUGIN_PREAMBLE = "import clr; import Zeiss.Micro.LM.Scripting; clr.ImportExtensions(Zeiss.Micro.LM.Scripting)\n"
 
 ADAPTIVE_FUNCTIONS = {}
 
@@ -437,9 +442,9 @@ else:
             with open(_plugin_path, "r") as _plugin_file:
                 _plugin_source = _plugin_file.read()
 
-            # Statement, not the execfile builtin, and no target namespace. Do not 'tidy' this
-            # into exec(_plugin_source) or execfile(...): that is what did not work.
-            exec _plugin_source
+            # The preamble is one line, so a line number in a plugin traceback is one higher
+            # than the same line in the file itself
+            exec(PLUGIN_PREAMBLE + _plugin_source)
 
         except Exception as _error:
             log("Adaptive experiment {} could not be loaded: {}".format(_plugin_path, _error))
