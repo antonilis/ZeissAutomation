@@ -234,10 +234,10 @@ if __name__ == '__main__':
 
     #main_directions = choose_chi_files(main_path)
 
-    with open('../../ZeissAPI/config/preprocessing_config.json', 'r') as file:
-        preprocessing_config = json.load(file)
+    with open('../../ZeissAPI/config/processing_config.json', 'r') as file:
+        processing_config = json.load(file)
 
-    details = preprocessing_config['FLGUV']
+    details = processing_config['FLGUV']
 
     obj_main = ZeissImageProcessor(main_path, **details)
     #

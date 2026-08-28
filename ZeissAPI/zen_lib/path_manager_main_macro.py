@@ -1,6 +1,6 @@
 ﻿from System.IO import Directory, Path, File
 
-from runtime_config import log
+from zen_lib.runtime_config import log
 
 
 class PathManager:

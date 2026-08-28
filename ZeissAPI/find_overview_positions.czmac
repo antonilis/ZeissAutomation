@@ -7,7 +7,7 @@
 import json
 from System.IO import Directory, Path, File
 
-from runtime_config import RuntimeConfig, log
+from zen_lib.runtime_config import RuntimeConfig, log
 
 
 # Same rule as in main_macro: the config folder sits next to this macro in the ZEN
@@ -28,6 +28,76 @@ def get_stage_focus_position():
     return [x, y, z]
 
 
+def split_well(label):
+    """
+    Splits a well label into its letter and its number.
+    :param str label: for example "A1" or "H12"
+    :return: tuple (letter, number)
+    """
+    letter = label[:1]
+    number = label[1:]
+
+    if not letter.isalpha() or not number.isdigit():
+        raise ValueError("Cannot read the well '{}', expected a letter followed by a number, like A1".format(label))
+
+    return letter, int(number)
+
+
+def parse_well_list(text):
+    """
+    Reads a plate selection such as "A1-A12, C3, E5-E8" into the wells it names.
+
+    An item is either a single well or two wells joined by a dash, which selects the whole
+    rectangle between them. "A1-C4" on its own therefore means exactly what the old start and
+    end fields meant, so a selection that worked before still works and nothing has to be
+    learned to keep things as they were. Several items are what the two fields could not
+    express at all: "A1-H1, A4-H4" is two separate columns in one run.
+
+    Wells keep the order they were written in and repeats are dropped, so overlapping items
+    are harmless. A range written backwards is read the same as one written forwards.
+
+    :param str text: contents of the wells text box
+    :return: list of (letter, number) tuples
+    """
+    wells = []
+    seen = set()
+
+    for item in text.split(","):
+        item = item.strip().upper()
+
+        if not item:
+            continue
+
+        corners = [part.strip() for part in item.split("-")]
+
+        # a single well is the rectangle between itself and itself
+        if len(corners) == 1:
+            corners = corners * 2
+
+        if len(corners) != 2:
+            raise ValueError("Cannot read the well range '{}', expected something like A1-C4".format(item))
+
+        first_letter, first_number = split_well(corners[0])
+        last_letter, last_number = split_well(corners[1])
+
+        letters = range(min(ord(first_letter), ord(last_letter)),
+                        max(ord(first_letter), ord(last_letter)) + 1)
+        numbers = range(min(first_number, last_number), max(first_number, last_number) + 1)
+
+        for letter in letters:
+            for number in numbers:
+                well = (chr(letter), number)
+
+                if well not in seen:
+                    seen.add(well)
+                    wells.append(well)
+
+    if not wells:
+        raise ValueError("No wells were given. Write something like A1-C4, or A1-H1, A4-H4")
+
+    return wells
+
+
 class AcquisitionGrid:
     """
     Class for the fast generation of the points on which one will perform the full pipeline
@@ -46,16 +116,23 @@ class AcquisitionGrid:
             mode="experiment",
 
             experiment_name="AI_sample_finder",  # works in experiment mode: name of the .czexp file to read points from
-            manual_points=None
-            # dictionairy with the keys: "start", "end", "shift_x", "shift_y", "start_position", where start and end are in the convention of the plate,
-            # while start_position is a real stage position in um of the start.
-            # For example start=A1, end=C4. The grid is then generated where A1 is the top-left corner and C4 is bottom right. The distances between wells are calculated
-            # from the shifts and starting_position
+            manual_points=None,
+            # dictionairy with the keys: "wells", "shift_x", "shift_y", "start_position". "wells" is
+            # a selection in the convention of the plate, for example "A1-C4" for a rectangle or
+            # "A1-H1, A4-H4, E5" for two whole columns and one extra well, while start_position is the
+            # real stage position in um of the FIRST well of that selection. Every other well is placed
+            # from it using the shifts.
+
+            subgrid=None
+            # dictionary with the keys "rows", "cols", "shift_x" and "shift_y". Every point produced
+            # by the chosen mode is then replaced by a rows x cols grid centred on it, which is how
+            # one gets several fields of view inside a single well. Omitted, or 1x1, means no sub-grid.
     ):
         self.config = config
         self.experiment_name = experiment_name
         self.mode = mode
         self.manual_points = manual_points or []
+        self.subgrid = subgrid or {}
 
         # required for savings points in the directory compatible with automation pipeline
         self.measuring_points_path = config.measurements
@@ -67,6 +144,10 @@ class AcquisitionGrid:
             self.points_for_overview = self.generate_grid_from_args()
         else:
             raise ValueError("Unknown mode: {}".format(self.mode))
+
+        # Applied to whatever the chosen mode produced, so that the arithmetic exists once and
+        # both modes gain the sub-grid at the same time
+        self.points_for_overview = self.expand_with_subgrid(self.points_for_overview)
 
     def calculate_points_for_overview(self):
         """
@@ -89,11 +170,10 @@ class AcquisitionGrid:
 
     def generate_grid_from_args(self):
         """
-        Generates a regular grid of 3D points based on manual configuration.
-        The grid is defined using plate-like labels (e.g. A1 to C3),
-        a starting position in 3D space, and constant shifts in X and Y
-        directions. Each generated point has a unique name (e.g. "B2")
-        and a fixed Z coordinate taken from the start position.
+        Generates the 3D points of the wells named in the manual configuration. The selection is a
+        list of plate labels and ranges (e.g. "A1-C4" or "A1-H1, A4-H4, E5"), the stage position in
+        start_position is the position of the first well of that selection, and every other well is
+        placed from the constant shifts in X and Y.
 
         return: list[dict]: List of points with keys:
                 - "name": grid label (e.g. "A1")
@@ -102,38 +182,93 @@ class AcquisitionGrid:
 
         cfg = self.manual_points
 
-        required = ["start", "end", "shift_x", "shift_y", "start_position"]
+        required = ["wells", "shift_x", "shift_y", "start_position"]
         for r in required:
             if r not in cfg:
                 raise ValueError("Missing '{}' in manual_points".format(r))
 
-        start_label = cfg["start"].upper()
-        end_label = cfg["end"].upper()
-
-        # conversion from example: "A1" -&gt; ('A', 1)
-        start_col, start_row = start_label[0], int(start_label[1:])
-        end_col, end_row = end_label[0], int(end_label[1:])
-
-        cols = [chr(c) for c in range(ord(start_col), ord(end_col) + 1)]
-        rows = list(range(start_row, end_row + 1))
+        wells = parse_well_list(cfg["wells"])
 
         shift_x = cfg["shift_x"]
         shift_y = cfg["shift_y"]
         base_x, base_y, base_z = cfg["start_position"]
 
+        # Every well is placed relative to the first one of the selection rather than to its own
+        # position in the list, so the order the items were typed in cannot move the whole plate,
+        # and a selection that does not start at the top left corner stays where it belongs
+        anchor_letter, anchor_number = wells[0]
+
         points = []
-        for c_idx, col in enumerate(cols):
-            for r_idx, row in enumerate(rows):
-                x = base_x + r_idx * shift_x
-                y = base_y + c_idx * shift_y
-                z = base_z
-                name = "{}{}".format(col, row)
-                points.append({
-                    "name": name,
-                    "position": [x, y, z]
-                })
+        for letter, number in wells:
+            x = base_x + (number - anchor_number) * shift_x
+            y = base_y + (ord(letter) - ord(anchor_letter)) * shift_y
+            z = base_z
+            name = "{}{}".format(letter, number)
+            points.append({
+                "name": name,
+                "position": [x, y, z]
+            })
         log("Generated {} manual grid points.".format(len(points)))
         return points
+
+    def expand_with_subgrid(self, points):
+        """
+        Replaces every point with a grid of points centred on it, which is how one gets several
+        fields of view inside a single well.
+
+        The original point stays the centre of its own sub-grid, so switching a sub-grid on does not
+        move the wells that were already being visited. Names are the original name followed by the
+        row and column, which keeps them unique - and they have to be unique, because the name is
+        the only thing telling apart the overview image and the measurement file of two points in
+        the same run.
+
+        :param list points: points with the keys "name" and "position"
+        :return: list of points, named "A1_r1c1", "A1_r1c2" and so on
+        """
+        if not self.subgrid:
+            return points
+
+        required = ["rows", "cols", "shift_x", "shift_y"]
+
+        for key in required:
+            if key not in self.subgrid:
+                raise ValueError("Missing '{}' in subgrid".format(key))
+
+        rows = int(self.subgrid["rows"])
+        cols = int(self.subgrid["cols"])
+
+        if rows &lt; 1 or cols &lt; 1:
+            raise ValueError("Sub-grid needs at least one row and one column, got {}x{}".format(
+                rows, cols))
+
+        # 1x1 is how the GUI says 'no sub-grid', and it must not rename the points
+        if rows == 1 and cols == 1:
+            return points
+
+        shift_x = self.subgrid["shift_x"]
+        shift_y = self.subgrid["shift_y"]
+
+        # Offsets around the centre: three columns give [-shift, 0, +shift], two give
+        # [-shift/2, +shift/2], so the centre of the sub-grid is always the original point
+        x_offsets = [(c_idx - (cols - 1) / 2.0) * shift_x for c_idx in range(cols)]
+        y_offsets = [(r_idx - (rows - 1) / 2.0) * shift_y for r_idx in range(rows)]
+
+        expanded = []
+
+        for point in points:
+            x, y, z = point["position"]
+
+            for r_idx, y_offset in enumerate(y_offsets):
+                for c_idx, x_offset in enumerate(x_offsets):
+                    expanded.append({
+                        "name": "{}_r{}c{}".format(point["name"], r_idx + 1, c_idx + 1),
+                        "position": [x + x_offset, y + y_offset, z]
+                    })
+
+        log("Expanded {} points into {} with a {}x{} sub-grid".format(
+            len(points), len(expanded), rows, cols))
+
+        return expanded
 
     def save_overview_points(self):
         file_name = "points_for_overview.json"
@@ -184,12 +319,24 @@ else:
 
     window.AddIntegerRange('shift_x', 'Shift in x [um]:', 1500, 20, 20000)
     window.AddIntegerRange('shift_y', 'Shift in y [um]:', 1500, 20, 20000)
-    window.AddTextBox('start_point', 'Starting well:', 'A1')
-    window.AddTextBox('end_point', 'Starting well:', 'B2')
+    # One field instead of a start and an end, because a rectangle was the only thing two fields
+    # could express. A plain "A1-C4" still means what it always did.
+    window.AddTextBox('wells',
+                      'Wells, e.g. "A1-C4" or "A1-H1, A4-H4, E5" (stage on the first one):',
+                      'A1-B2')
+
+# The sub-grid applies to the points of both modes, so it is asked for outside the branch above.
+# 1x1 is the default and means no sub-grid at all.
+window.AddIntegerRange('subgrid_rows', 'Sub-grid rows in every point:', 1, 1, 50)
+window.AddIntegerRange('subgrid_cols', 'Sub-grid columns in every point:', 1, 1, 50)
+window.AddIntegerRange('subgrid_shift_x', 'Sub-grid shift in x [um]:', 300, 1, 20000)
+window.AddIntegerRange('subgrid_shift_y', 'Sub-grid shift in y [um]:', 300, 1, 20000)
 
 result_parameters = window.Show()
 
-if result_mode.HasCanceled:
+# result_parameters, not result_mode: cancelling this window has to end the macro as well,
+# otherwise everything below is read out of a dialog that was just abandoned
+if not result_parameters or result_parameters.HasCanceled:
     raise SystemExit
 
 ############################ Initialization of the code above ##############################################################################
@@ -203,15 +350,58 @@ if result_mode.GetValue("reading_mode"):
 else:
 
     chosen_mode = "manual"
-    chosen_manual_points = {"start": result_parameters.GetValue("start_point"),
-                            "end": result_parameters.GetValue("end_point"),
+    chosen_manual_points = {"wells": result_parameters.GetValue("wells"),
                             "shift_x": result_parameters.GetValue("shift_x"),
-                            "shift_y": result_parameters.GetValue("shift_y"), "start_position":
-                                get_stage_focus_position()}
+                            "shift_y": result_parameters.GetValue("shift_y"),
+                            "start_position": get_stage_focus_position()}
     chosen_experiment = None
 
-grid_manual = AcquisitionGrid(CONFIG, mode=chosen_mode, experiment_name=chosen_experiment,
-                              manual_points=chosen_manual_points)
+chosen_subgrid = {"rows": result_parameters.GetValue("subgrid_rows"),
+                  "cols": result_parameters.GetValue("subgrid_cols"),
+                  "shift_x": result_parameters.GetValue("subgrid_shift_x"),
+                  "shift_y": result_parameters.GetValue("subgrid_shift_y")}
+
+# A mistyped well selection is the likeliest thing to go wrong here, and a raw traceback in the
+# ZEN macro editor says very little. Nothing has moved at this point, so it is enough to say what
+# is wrong and stop.
+try:
+    grid_manual = AcquisitionGrid(CONFIG, mode=chosen_mode, experiment_name=chosen_experiment,
+                                  manual_points=chosen_manual_points, subgrid=chosen_subgrid)
+
+except ValueError as error:
+    log("Could not generate the points: {}".format(error))
+
+    problems = ZenWindow()
+    problems.Initialize("Cannot generate the points")
+    problems.AddMultiLineTextBox('problem', 'Fix this and run the macro again:', str(error))
+    problems.Show()
+
+    raise SystemExit
+
+# A sub-grid multiplies the number of points, and every one of them is a full overview with
+# everything main_macro then does on it. A 96 well plate with a 3x3 sub-grid is 864 overviews,
+# so the total is shown before anything is written.
+points = grid_manual.points_for_overview
+
+if not points:
+    log("No points were generated, nothing was saved")
+
+    raise SystemExit
+
+summary = ZenWindow()
+summary.Initialize("Points to save")
+summary_text = "{} points in total\n\nFirst: {}\nLast:  {}".format(
+    len(points), points[0]['name'], points[-1]['name'])
+
+summary.AddMultiLineTextBox('points_summary',
+                            'These points will be written to points_for_overview.json:',
+                            summary_text)
+
+result_summary = summary.Show()
+
+if not result_summary or result_summary.HasCanceled:
+    raise SystemExit
+
 grid_manual.save_overview_points()
 
 </Text>

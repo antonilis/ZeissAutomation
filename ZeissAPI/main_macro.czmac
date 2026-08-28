@@ -9,9 +9,9 @@ import time
 import uuid
 from System.IO import Directory, Path, File
 
-from runtime_config import RuntimeConfig, log, read_json as read_json_file
-from execute_python import PythonAnalysisRunner
-from path_manager_main_macro import PathManager
+from zen_lib.runtime_config import RuntimeConfig, log, read_json as read_json_file
+from zen_lib.execute_python import PythonAnalysisRunner
+from zen_lib.path_manager_main_macro import PathManager
 
 
 # The configuration lives in the config folder next to this macro, inside the ZEN
@@ -373,54 +373,62 @@ class AcquisitionPipeline:
         log("Saved the result: {}".format(file_name))
 
 
-################################## Functions for adaptive experiments: #######################################
+################################## Loading the adaptive experiments ##########################################
+# An adaptive experiment is a function that rewrites an experiment just before it runs, using the
+# properties of the object it is about to be run on. Those functions live in their own folder next
+# to this macro, one file each, and are NOT imported: a normally imported module cannot see Zen,
+# ZeissApiProcessor or any of the other names ZEN injects into a macro. Each file is instead read
+# and run in a namespace that already holds them, which is the same thing as pasting its text in
+# here, only done by the code instead of by hand.
 
-def fcs_zscan(exp_item, obj_id, stage, obj, name):
+
+def load_adaptive_functions(folder):
     """
-    Example of the function suited for adaptive experiments. Based on the radius of the object it moves from the focus
-    by the object radius and set this as the center of z-scan with FCS, useful for finding the top of GUVs when combined
-    when the experiment is chosen for the z-reanalysis.
+    Reads every plugin in the adaptive folder and collects the functions it registers. A file that
+    cannot be run is logged and skipped, so that one broken plugin cannot stop an acquisition which
+    does not use it.
+    :param str folder: full path to the folder holding the plugin files
+    :return: dict of function name to function
     """
-    radius = obj['radius']
+    functions = {}
 
-    if radius > 200:
-        radius = 0
+    def register_adaptive(function):
+        """
+        Injected into every plugin. It is the counterpart of @register_class on the analysis side:
+        the name of the decorated function is what the dropdown offers.
+        """
+        functions[function.__name__] = function
 
-    actual_position = ZeissApiProcessor.get_stage_focus_position()
-    log("I could have move by radius of {}".format(str(obj)))
+        return function
 
-    modified_position = [actual_position[0], actual_position[1], actual_position[2] + radius]
+    if not Directory.Exists(folder):
+        log("No adaptive experiments: {} does not exist".format(folder))
 
-    exp_obj = Zen.Acquisition.Experiments.GetByName(exp_item)
+        return functions
 
-    exp_obj.ClearExperimentRegionsAndPositions(0)
-    exp_obj.ClearTileRegionsAndPositions(0)
+    # Everything a plugin may need. A plugin imports nothing and is handed these for free.
+    shared = {'Zen': Zen, 'ZenWindow': ZenWindow, 'ZeissApiProcessor': ZeissApiProcessor,
+              'PathManager': PathManager, 'PythonAnalysisRunner': PythonAnalysisRunner,
+              'CONFIG': CONFIG, 'log': log, 'json': json, 'time': time, 'uuid': uuid,
+              'Directory': Directory, 'Path': Path, 'File': File,
+              'register_adaptive': register_adaptive}
 
-    z_offset = [modified_position[2] - 0.2, modified_position[2] - 0.1, modified_position[2],
-                modified_position[2] + 0.1, modified_position[2] + 0.2]
+    for file_path in Directory.GetFiles(folder, "*.py"):
 
-    positions_dict = {}
+        # Files whose name starts with an underscore are helpers, not experiments
+        if Path.GetFileName(file_path).startswith("_"):
+            continue
 
-    for i in range(len(z_offset)):
-        name_for_dict = "P{}".format(i + 1)
+        try:
+            # A copy per plugin, so that one file cannot leave anything behind for the next
+            execfile(file_path, dict(shared))
 
-        positions_dict[name_for_dict] = {'x': modified_position[0], 'y': modified_position[1], 'z': z_offset[i]}
+        except Exception as error:
+            log("Adaptive experiment {} could not be loaded: {}".format(file_path, error))
 
-    path_menager = PathManager(CONFIG)
+    log("Loaded adaptive experiments: {}".format(", ".join(sorted(functions)) or "none"))
 
-    res_dir = path_menager.result_dir(obj_id, stage, name)
-
-    # At this point one needs to save the positions of the FCS measurements, because there is no information about the
-    # positions in the metadata
-    path = Path.Combine(res_dir, "FCS_points.json")
-
-    with open(path, "w") as file:
-        json.dump(positions_dict, file, indent=2, ensure_ascii=False)
-
-    for z_position in z_offset:
-        exp_obj.AddSinglePosition(blockIndex=0, x=modified_position[0], y=modified_position[1], z=z_position)
-
-    exp_obj.SetActive()
+    return functions
 
 
 ################################## Reading and checking the GUI selections #######################################
@@ -433,34 +441,30 @@ def none_or_value(x):
     return None if x == "None" else x
 
 
-def read_adaptive_experiment(raw_text):
+def build_adaptive_experiment(function_name, target_experiment):
     """
-    The adaptive experiment is typed in as free text and has to be evaluated. It is done here,
-    once, so that a mistake is reported in a dialog instead of stopping the run after the stage
-    has already moved and an experiment has already been acquired.
-    :param str raw_text: contents of the adaptive experiment text box
+    Puts the adaptive experiment together from the two names the GUI offers. This replaces the free
+    text box that used to be evaluated here: a plugin is chosen by name, so there is nothing left to
+    parse and nothing that can be mistyped.
+    :param str function_name: name of a function registered by a plugin, or None
+    :param str target_experiment: name of the experiment that function rewrites, or None
     :return: tuple (adaptive experiment dict or None, error message or None)
     """
-    if none_or_value(raw_text) is None:
+    if function_name is None:
         return None, None
 
-    try:
-        adaptive_experiment = eval(raw_text)
-    except Exception as error:
-        return None, "Adaptive experiment could not be evaluated: {}".format(error)
+    function = ADAPTIVE_FUNCTIONS.get(function_name)
 
-    if not isinstance(adaptive_experiment, dict):
-        return None, "Adaptive experiment has to be a dictionary, for example " \
-                     "{'experiment': 'FCS_zscan', 'function': fcs_zscan}"
+    if function is None:
+        return None, "The adaptive function '{}' was not loaded from {}. Available: {}".format(
+            function_name, CONFIG.adaptive_path, ", ".join(sorted(ADAPTIVE_FUNCTIONS)) or "none")
 
-    for key in ("experiment", "function"):
-        if key not in adaptive_experiment:
-            return None, "Adaptive experiment is missing the '{}' key".format(key)
+    if target_experiment is None:
+        return None, "The adaptive function '{}' was chosen without an experiment to rewrite. " \
+                     "Choose the experiment it applies to, or set the function back to None.".format(
+                         function_name)
 
-    if not callable(adaptive_experiment["function"]):
-        return None, "The 'function' of the adaptive experiment is not callable"
-
-    return adaptive_experiment, None
+    return {'experiment': target_experiment, 'function': function}, None
 
 
 def validate_setup(setup):
@@ -519,11 +523,11 @@ def validate_setup(setup):
         if preset_name is None:
             continue
 
-        preset = preprocessing_data.get(preset_name)
+        preset = processing_data.get(preset_name)
 
         if preset is None:
             problems.append(
-                "The {} preset '{}' is not in preprocessing_config.json.".format(label, preset_name))
+                "The {} preset '{}' is not in processing_config.json.".format(label, preset_name))
 
         elif not preset.get('chosen_analysis'):
             problems.append(
@@ -573,7 +577,7 @@ def validate_setup(setup):
 REQUIRED_SETUP_KEYS = ('finding_objects', 'multiple_overviews', 'overview_experiment',
                        'overview_analysis', 'overview_selection', 'visualization_experiment',
                        'reanalysis_xy', 'z_experiment', 'z_analysis', 'is_FCS',
-                       'post_experiments', 'adaptive_text')
+                       'post_experiments', 'adaptive_function', 'adaptive_target')
 
 
 def load_setup(path):
@@ -598,9 +602,10 @@ def load_setup(path):
              "version of this macro. Run once without loading it and it will be written "
              "again.".format(path, ", ".join(missing))])
 
-    # A function cannot be written to a file, so only the text it was built from is saved, and the
-    # adaptive experiment is evaluated again here exactly as it would be straight from the text box
-    adaptive_experiment, adaptive_error = read_adaptive_experiment(setup['adaptive_text'])
+    # A function cannot be written to a file, so the saved setup names the plugin instead, and the
+    # adaptive experiment is put together again here from the same two names the dropdowns give
+    adaptive_experiment, adaptive_error = build_adaptive_experiment(
+        setup['adaptive_function'], setup['adaptive_target'])
 
     setup['adaptive_experiment'] = adaptive_experiment
 
@@ -610,8 +615,8 @@ def load_setup(path):
 def save_setup(path, setup):
     """
     Records the confirmed settings, so that the next run can start from them. The evaluated
-    adaptive experiment is left out because it holds a function; 'adaptive_text', which it was
-    built from, is saved in its place.
+    adaptive experiment is left out because it holds a function; 'adaptive_function' and
+    'adaptive_target', which name it, are saved in its place.
     :param str path: full path to write to
     :param dict setup: the confirmed selections
     :return: None
@@ -644,8 +649,9 @@ def show_problems(problems):
 ################################## Code for generating GUI #######################################
 
 
-preprocessing_data = CONFIG.preprocessing_config()
+processing_data = CONFIG.processing_config()
 selection_data = CONFIG.selection_config()
+ADAPTIVE_FUNCTIONS = load_adaptive_functions(CONFIG.adaptive_path)
 
 
 def getshortfiles(filelist):
@@ -710,26 +716,26 @@ else:
     finding_objects = result_mode.GetValue('finding_objects_mode')
     multiple_overviews = result_mode.GetValue('multiple_overviews_mode')
 
-    # === window 2: choosing experiments and analysis, the analysis arguments are specified in the preprocessing_config===
+    # === window 2: choosing experiments and analysis, the analysis arguments are specified in the processing_config===
     window.ClearContent()
     window.Initialize("Automated Acquisition")
 
     if finding_objects:
         window.AddDropDown('over_exp_name', 'Choose overview experiment:', experiments, 0)
-        window.AddDropDown('over_analysis', 'Choose overview analysis:', preprocessing_data.keys(), 0)
+        window.AddDropDown('over_analysis', 'Choose overview analysis:', processing_data.keys(), 0)
         window.AddDropDown('over_selection', 'Choose object selection for the found objects:',
                            ["None"] + selection_data.keys(), 0)
         window.AddDropDown('vis_exp', 'Choose experiment for object visualization:', experiments, 0)
-        window.AddDropDown('rean_xy_name', 'Choose reanalysis in xy:', ["None"] + preprocessing_data.keys(), 0)
+        window.AddDropDown('rean_xy_name', 'Choose reanalysis in xy:', ["None"] + processing_data.keys(), 0)
 
     window.AddDropDown('z_exp_name', 'Choose experiment for z-reanalysis:', ["None"] + experiments, 0)
-    window.AddDropDown('z_analysis', 'Choose z-reanalysis:', ["None"] + preprocessing_data.keys(), 0)
+    window.AddDropDown('z_analysis', 'Choose z-reanalysis:', ["None"] + processing_data.keys(), 0)
     window.AddCheckbox('is_FCS', 'Is z analysis experiment a FCS experiments:', True)
 
-    default_adaptive = 'None'
-    window.AddTextBox('adaptive_experiment',
-                      "Adaptive experiment, e.g. {'experiment': 'FCS_zscan', 'function': fcs_zscan}:",
-                      default_adaptive)
+    window.AddDropDown('adaptive_function', 'Adaptive experiment function:',
+                       ["None"] + sorted(ADAPTIVE_FUNCTIONS.keys()), 0)
+    window.AddDropDown('adaptive_target', 'Experiment the adaptive function rewrites:',
+                       ["None"] + experiments, 0)
 
     result_setup = window.Show()
 
@@ -778,9 +784,11 @@ else:
     # Everything below reads this dictionary and nothing calls GetValue again, so the summary
     # window cannot end up describing something other than what the pipeline is given.
 
-    # The text is kept next to the evaluated dictionary, because it is the text that can be saved
-    adaptive_text = result_setup.GetValue('adaptive_experiment')
-    adaptive_experiment, adaptive_error = read_adaptive_experiment(adaptive_text)
+    # Two names instead of a line of code to evaluate: the plugin, and the experiment it rewrites
+    adaptive_function = none_or_value(result_setup.GetValue('adaptive_function'))
+    adaptive_target = none_or_value(result_setup.GetValue('adaptive_target'))
+
+    adaptive_experiment, adaptive_error = build_adaptive_experiment(adaptive_function, adaptive_target)
 
     setup = {
         'finding_objects': finding_objects,
@@ -794,7 +802,8 @@ else:
         'z_analysis': none_or_value(result_setup.GetValue('z_analysis')),
         'is_FCS': result_setup.GetValue('is_FCS'),
         'adaptive_experiment': adaptive_experiment,
-        'adaptive_text': adaptive_text,
+        'adaptive_function': adaptive_function,
+        'adaptive_target': adaptive_target,
         'post_experiments': selected_experiments,
     }
 
@@ -834,7 +843,8 @@ if setup['finding_objects']:
 summary_text += "\nZ experiment: {}\n".format(setup['z_experiment'])
 summary_text += "Z analysis: {}\n".format(setup['z_analysis'])
 summary_text += "Is z experiment a FCS?: {}\n".format(setup['is_FCS'])
-summary_text += "Adaptive experiment: {}\n".format(setup['adaptive_experiment'])
+summary_text += "Adaptive experiment: {} rewriting {}\n".format(
+    setup['adaptive_function'], setup['adaptive_target'])
 
 if setup['post_experiments']:
     summary_text += "\nPost-analysis experiments:\n" + "\n".join(setup['post_experiments'])

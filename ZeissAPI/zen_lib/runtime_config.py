@@ -16,8 +16,13 @@ import json
 
 CONFIG_DIR_NAME = "config"
 PATH_CONFIG_NAME = "path_config.json"
-PREPROCESSING_CONFIG_NAME = "preprocessing_config.json"
+PROCESSING_CONFIG_NAME = "processing_config.json"
 SELECTION_CONFIG_NAME = "selection_config.json"
+
+# Folder holding the adaptive experiment plugins. They are not imported: main_macro reads
+# each file and runs it in its own namespace, which is the only way a file outside the macro
+# can reach the names ZEN injects into it.
+ADAPTIVE_DIR_NAME = "adaptive"
 
 # Fallback log file, used before path_config.json has been read and when it does not
 # name one. It is written next to the macros, in the same folder as the config, so that
@@ -36,11 +41,13 @@ _log_path = None
 def macro_directory():
     """
     Return the ZEN runtime folder of this project, that is the folder holding the
-    macros and their helper modules.
-    :return: str absolute path to the folder containing this module
+    macros, the config folder and the adaptive plugins.
+    :return: str absolute path to the folder one level above this module
     """
     try:
-        return Path.GetDirectoryName(Path.GetFullPath(__file__))
+        # This module lives in zen_lib, one level below the macros, so the folder that matters
+        # is the parent of the one holding this file
+        return Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(__file__)))
     except Exception:
         # __file__ is undefined when code is pasted straight into the ZEN editor
         # instead of being imported. Fall back to the working directory, which is
@@ -62,11 +69,11 @@ def path_config_file():
     return Path.Combine(config_dir(), PATH_CONFIG_NAME)
 
 
-def preprocessing_config_file():
+def processing_config_file():
     """
-    :return: str absolute path to preprocessing_config.json
+    :return: str absolute path to processing_config.json
     """
-    return Path.Combine(config_dir(), PREPROCESSING_CONFIG_NAME)
+    return Path.Combine(config_dir(), PROCESSING_CONFIG_NAME)
 
 
 def selection_config_file():
@@ -74,6 +81,13 @@ def selection_config_file():
     :return: str absolute path to selection_config.json
     """
     return Path.Combine(config_dir(), SELECTION_CONFIG_NAME)
+
+
+def adaptive_dir():
+    """
+    :return: str absolute path to the folder with the adaptive experiment plugins
+    """
+    return Path.Combine(macro_directory(), ADAPTIVE_DIR_NAME)
 
 
 def read_json(path):
@@ -171,18 +185,22 @@ class RuntimeConfig:
 
         # Passed to the CPython side on the command line, so that it does not have to
         # guess where the config folder is
-        self.preprocessing_config_path = preprocessing_config_file()
+        self.processing_config_path = processing_config_file()
         self.selection_config_path = selection_config_file()
+
+        # Read by main_macro itself rather than handed to World B: the plugins in there are
+        # ZEN code and never leave this side
+        self.adaptive_path = adaptive_dir()
 
         log("Loaded path configuration from {}".format(self.config_path))
         log("Logging to {}".format(self.log_path))
 
-    def preprocessing_config(self):
+    def processing_config(self):
         """
         Read the named analysis presets. Used by the macro to fill the GUI dropdowns.
         :return: dict of preset name to analysis arguments
         """
-        return read_json(self.preprocessing_config_path)
+        return read_json(self.processing_config_path)
 
     def selection_config(self):
         """

@@ -1,6 +1,6 @@
 from System.Diagnostics import Process
 
-from runtime_config import log
+from zen_lib.runtime_config import log
 
 
 class PythonAnalysisRunner:
@@ -20,8 +20,8 @@ class PythonAnalysisRunner:
         self.project = config.python_project_root #root of the main_processor localization
 
         # The CPython side does not know where the ZEN runtime folder is, so the location
-        # of preprocessing_config.json is handed to it with every call
-        self.preprocessing_config = config.preprocessing_config_path
+        # of processing_config.json is handed to it with every call
+        self.processing_config = config.processing_config_path
         self.selection_config = config.selection_config_path
 
 
@@ -48,7 +48,7 @@ class PythonAnalysisRunner:
 
         # The location of the analysis presets travels with every call, so that the
         # CPython side never has to guess where the config folder is
-        kwargs["preprocessing_config"] = self.preprocessing_config
+        kwargs["processing_config"] = self.processing_config
         kwargs["selection_config"] = self.selection_config
 
         proc = Process()

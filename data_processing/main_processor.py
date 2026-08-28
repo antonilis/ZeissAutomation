@@ -17,21 +17,21 @@ command_args = parse_args_to_dict()
 print("[INFO] Parsed arguments: {}".format(command_args))
 
 # The analysis presets live in the config folder of the ZEN runtime, and their location
-# arrives as --preprocessing_config from PythonAnalysisRunner. It is deliberately not
+# arrives as --processing_config from PythonAnalysisRunner. It is deliberately not
 # resolved here: a fallback would be a second source of truth and could silently read a
 # different preset file than the one the macro uses.
-if 'preprocessing_config' not in command_args:
+if 'processing_config' not in command_args:
     raise ValueError(
-        "Missing --preprocessing_config. It is the path to preprocessing_config.json and is "
+        "Missing --processing_config. It is the path to processing_config.json and is "
         "passed automatically by PythonAnalysisRunner; supply it explicitly when running this "
         "script by hand.")
 
-preprocessing_config_path = command_args['preprocessing_config']
+processing_config_path = command_args['processing_config']
 
-print("[INFO] Reading analysis presets from: {}".format(preprocessing_config_path))
+print("[INFO] Reading analysis presets from: {}".format(processing_config_path))
 
-with open(preprocessing_config_path, 'r') as file:
-    preprocessing_config = json.load(file)
+with open(processing_config_path, 'r') as file:
+    processing_config = json.load(file)
 
 if command_args['is_FCS'] == 'True':
 
@@ -51,7 +51,7 @@ else:
 
     print("Analyzing Image")
 
-    analysis_type = dict(preprocessing_config[command_args['analysis_arguments']])
+    analysis_type = dict(processing_config[command_args['analysis_arguments']])
 
     # The object selection is the optional second stage. Without --selection_arguments nothing is
     # added here and ZeissImageProcessor runs exactly as it did before that stage existed.
