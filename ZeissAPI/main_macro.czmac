@@ -146,6 +146,15 @@ class AcquisitionPipeline:
         self.overview_id = str(uuid.uuid4())
         self.measurements_objects = {}
 
+        # Said out loud, because an adaptive experiment that was never armed is otherwise
+        # invisible: it simply does not run, and leaves nothing behind explaining why
+        if self.adaptive_experiment is None:
+            log("Pipeline built with no adaptive experiment")
+        else:
+            log("Pipeline built with adaptive experiment {} rewriting {}".format(
+                self.adaptive_experiment['function'].__name__,
+                self.adaptive_experiment['experiment']))
+
     def get_overview_points(self):
         """
         Reads the points in which the full pipeline needs to be executed.
@@ -912,6 +921,7 @@ else:
         reanalysis_dict={'z': {'z_experiment': setup['z_experiment'],
                                'z_analysis': setup['z_analysis'],
                                'is_FCS': setup['is_FCS']}},
+        adaptive_experiment=setup['adaptive_experiment'],
     )
     if setup['multiple_overviews']:
 
