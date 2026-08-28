@@ -399,72 +399,52 @@ class AcquisitionPipeline:
 # here, only done by the code instead of by hand.
 
 
-def load_adaptive_functions(folder):
+# Adaptive experiments are loaded here, at the top level of this macro, with a bare exec and no
+# explicit namespace. Both details are deliberate: ZEN only gives part of its API to code that
+# is in the macro itself, and a bare exec at this level is the closest a file on disk can get to
+# having its text pasted right here - the names it defines land in this macro's own scope rather
+# than in a dictionary handed to it. execfile and exec-with-a-namespace are NOT the same thing.
+#
+# If this still does not give a plugin the full experiment API, the answer is the build step:
+# generate the .czmac with the plugin sources inlined, so the code really is in the macro.
+
+ADAPTIVE_FUNCTIONS = {}
+
+
+def register_adaptive(function):
     """
-    Reads every plugin in the adaptive folder and collects the functions it registers. A file that
-    cannot be run is logged and skipped, so that one broken plugin cannot stop an acquisition which
-    does not use it.
-
-    The plugins are run in THIS macro's own global namespace, not in a copy of it. That is what
-    "the same as pasting the text in here" has to mean literally: ZEN binds part of its API to the
-    scope of the macro itself, and a function whose __globals__ is a separate dictionary does not
-    get those members - GetByName then hands back an experiment without
-    ClearExperimentRegionsAndPositions and the rest of the advanced set.
-
-    The price is that a plugin can shadow a name this macro needs. Anything it overwrites is named
-    in the log, instead of surfacing much later as something inexplicable.
-
-    :param str folder: full path to the folder holding the plugin files
-    :return: dict of function name to function
+    Collects an adaptive experiment. It is the counterpart of @register_class on the analysis
+    side: the name of the decorated function is what the dropdown offers.
+    :param function: the decorated function
+    :return: the same function, unchanged
     """
-    functions = {}
+    ADAPTIVE_FUNCTIONS[function.__name__] = function
 
-    def register_adaptive(function):
-        """
-        Injected into every plugin. It is the counterpart of @register_class on the analysis side:
-        the name of the decorated function is what the dropdown offers.
-        """
-        functions[function.__name__] = function
+    return function
 
-        return function
 
-    if not Directory.Exists(folder):
-        log("No adaptive experiments: {} does not exist".format(folder))
+if not Directory.Exists(CONFIG.adaptive_path):
+    log("No adaptive experiments: {} does not exist".format(CONFIG.adaptive_path))
 
-        return functions
-
-    # No curated list of what a plugin is allowed to see: sharing this namespace means it sees
-    # whatever the macro sees, including the names defined further down, which exist by the time
-    # a plugin is actually called. register_adaptive is the only name that is not here already.
-    namespace = globals()
-    namespace['register_adaptive'] = register_adaptive
-
-    for file_path in Directory.GetFiles(folder, "*.py"):
+else:
+    for _plugin_path in Directory.GetFiles(CONFIG.adaptive_path, "*.py"):
 
         # Files whose name starts with an underscore are helpers, not experiments
-        if Path.GetFileName(file_path).startswith("_"):
+        if Path.GetFileName(_plugin_path).startswith("_"):
             continue
-
-        before = dict(namespace)
 
         try:
-            execfile(file_path, namespace)
+            with open(_plugin_path, "r") as _plugin_file:
+                _plugin_source = _plugin_file.read()
 
-        except Exception as error:
-            log("Adaptive experiment {} could not be loaded: {}".format(file_path, error))
+            # Statement, not the execfile builtin, and no target namespace. Do not 'tidy' this
+            # into exec(_plugin_source) or execfile(...): that is what did not work.
+            exec _plugin_source
 
-            continue
+        except Exception as _error:
+            log("Adaptive experiment {} could not be loaded: {}".format(_plugin_path, _error))
 
-        shadowed = [name for name in before
-                    if name in namespace and namespace[name] is not before[name]]
-
-        if shadowed:
-            log("Adaptive experiment {} overwrote names this macro uses: {}".format(
-                file_path, ", ".join(sorted(shadowed))))
-
-    log("Loaded adaptive experiments: {}".format(", ".join(sorted(functions)) or "none"))
-
-    return functions
+    log("Loaded adaptive experiments: {}".format(", ".join(sorted(ADAPTIVE_FUNCTIONS)) or "none"))
 
 
 ################################## Reading and checking the GUI selections #######################################
@@ -687,7 +667,6 @@ def show_problems(problems):
 
 processing_data = CONFIG.processing_config()
 selection_data = CONFIG.selection_config()
-ADAPTIVE_FUNCTIONS = load_adaptive_functions(CONFIG.adaptive_path)
 
 
 def getshortfiles(filelist):
