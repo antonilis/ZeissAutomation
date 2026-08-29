@@ -156,7 +156,7 @@ class AcquisitionPipeline:
             obj = self.measurements_objects[obj_id]
             self.zeiss_api.move(obj["position"])
 
-            # --- 1️ Do object visualization experiment, which results are used for xy-reanalysis ---
+            # --- 1 Do object visualization experiment, which results are used for xy-reanalysis ---
             self._run_experiment(obj_id, self.object_visualization_experiment, stage='_exp', name=name, obj=obj)
 
             log('Finished visualization of object {}'.format(obj_id))
