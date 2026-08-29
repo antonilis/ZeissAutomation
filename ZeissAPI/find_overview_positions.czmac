@@ -4,9 +4,7 @@
   <Version>1.0</Version>
   <Language>Python</Language>
   <Text>
-import json
 import sys
-from System.IO import Directory, Path, File
 
 # ZEN keeps its Python engine alive between macro runs, so a module imported once stays in
 # sys.modules and an edited file in zen_lib goes unnoticed until ZEN itself is restarted.
@@ -15,305 +13,34 @@ for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.st
     del sys.modules[_cached]
 
 from zen_lib.runtime_config import RuntimeConfig, log
+from zen_lib.zen_api import ZenApi
+from zen_lib.zen_gui import list_experiments, show_or_exit, show_problems
+from zen_lib.acquisition_grid import AcquisitionGrid
 
 
-# Same rule as in main_macro: the config folder sits next to this macro in the ZEN
-# runtime folder, it is read once here, and the resulting object is passed to
-# AcquisitionGrid instead of letting it locate the configuration itself.
+###################### the two things everything else is handed ########################################
+# Same rule as in main_macro: the config folder sits next to this macro in the ZEN runtime folder,
+# it is read once here, and the resulting object is passed to AcquisitionGrid instead of letting it
+# locate the configuration itself.
 CONFIG = RuntimeConfig()
 
-
-def get_stage_focus_position():
-    """
-    API call for obtaining the current position of the stage
-    :return: list of the x,y,z coordinates of the stage position
-    """
-    x = Zen.Devices.Stage.ActualPositionX
-    y = Zen.Devices.Stage.ActualPositionY
-    z = Zen.Devices.Focus.ActualPosition
-
-    return [x, y, z]
-
-
-def split_well(label):
-    """
-    Splits a well label into its letter and its number.
-    :param str label: for example "A1" or "H12"
-    :return: tuple (letter, number)
-    """
-    letter = label[:1]
-    number = label[1:]
-
-    if not letter.isalpha() or not number.isdigit():
-        raise ValueError("Cannot read the well '{}', expected a letter followed by a number, like A1".format(label))
-
-    return letter, int(number)
-
-
-def parse_well_list(text):
-    """
-    Reads a plate selection such as "A1-A12, C3, E5-E8" into the wells it names.
-
-    An item is either a single well or two wells joined by a dash, which selects the whole
-    rectangle between them. "A1-C4" on its own therefore means exactly what the old start and
-    end fields meant, so a selection that worked before still works and nothing has to be
-    learned to keep things as they were. Several items are what the two fields could not
-    express at all: "A1-H1, A4-H4" is two separate columns in one run.
-
-    Wells keep the order they were written in and repeats are dropped, so overlapping items
-    are harmless. A range written backwards is read the same as one written forwards.
-
-    :param str text: contents of the wells text box
-    :return: list of (letter, number) tuples
-    """
-    wells = []
-    seen = set()
-
-    for item in text.split(","):
-        item = item.strip().upper()
-
-        if not item:
-            continue
-
-        corners = [part.strip() for part in item.split("-")]
-
-        # a single well is the rectangle between itself and itself
-        if len(corners) == 1:
-            corners = corners * 2
-
-        if len(corners) != 2:
-            raise ValueError("Cannot read the well range '{}', expected something like A1-C4".format(item))
-
-        first_letter, first_number = split_well(corners[0])
-        last_letter, last_number = split_well(corners[1])
-
-        letters = range(min(ord(first_letter), ord(last_letter)),
-                        max(ord(first_letter), ord(last_letter)) + 1)
-        numbers = range(min(first_number, last_number), max(first_number, last_number) + 1)
-
-        for letter in letters:
-            for number in numbers:
-                well = (chr(letter), number)
-
-                if well not in seen:
-                    seen.add(well)
-                    wells.append(well)
-
-    if not wells:
-        raise ValueError("No wells were given. Write something like A1-C4, or A1-H1, A4-H4")
-
-    return wells
-
-
-class AcquisitionGrid:
-    """
-    Class for the fast generation of the points on which one will perform the full pipeline
-    of automated processes
-
-    param RuntimeConfig config: configuration built by the macro, used only for the directory
-    in which points_for_overview.json has to be saved
-    """
-
-    def __init__(
-            self,
-            config,
-
-            # 'available modes are: experiment' or 'manual', experiment mode reads the points from the centers of the tiles, manual generates the points by
-            # specifying the shifts in x, y and start/end position).
-            mode="experiment",
-
-            experiment_name="AI_sample_finder",  # works in experiment mode: name of the .czexp file to read points from
-            manual_points=None,
-            # dictionairy with the keys: "wells", "shift_x", "shift_y", "start_position". "wells" is
-            # a selection in the convention of the plate, for example "A1-C4" for a rectangle or
-            # "A1-H1, A4-H4, E5" for two whole columns and one extra well, while start_position is the
-            # real stage position in um of the FIRST well of that selection. Every other well is placed
-            # from it using the shifts.
-
-            subgrid=None
-            # dictionary with the keys "rows", "cols", "shift_x" and "shift_y". Every point produced
-            # by the chosen mode is then replaced by a rows x cols grid centred on it, which is how
-            # one gets several fields of view inside a single well. Omitted, or 1x1, means no sub-grid.
-    ):
-        self.config = config
-        self.experiment_name = experiment_name
-        self.mode = mode
-        self.manual_points = manual_points or []
-        self.subgrid = subgrid or {}
-
-        # required for savings points in the directory compatible with automation pipeline
-        self.measuring_points_path = config.measurements
-
-        # Choosing the method suitable mode of the points generation
-        if self.mode == "experiment":
-            self.points_for_overview = self.calculate_points_for_overview()
-        elif self.mode == "manual":
-            self.points_for_overview = self.generate_grid_from_args()
-        else:
-            raise ValueError("Unknown mode: {}".format(self.mode))
-
-        # Applied to whatever the chosen mode produced, so that the arithmetic exists once and
-        # both modes gain the sub-grid at the same time
-        self.points_for_overview = self.expand_with_subgrid(self.points_for_overview)
-
-    def calculate_points_for_overview(self):
-        """
-        Reads the centers of the tiles from the .czexp file name
-        return:
-        list[dict]: List of points with keys:
-            - "name": grid label (e.g. "A1")
-            - "position": [x, y, z] coordinates
-        """
-        exp = Zen.Acquisition.Experiments.GetByName(self.experiment_name)
-        tile_region_objects = exp.GetTileRegionInfos(0)
-
-        points_for_overview = []
-        for tile in tile_region_objects:
-            points_for_overview.append({
-                "position": [tile.CenterX, tile.CenterY, tile.Z],
-                "name": tile.Name,
-            })
-        return points_for_overview
-
-    def generate_grid_from_args(self):
-        """
-        Generates the 3D points of the wells named in the manual configuration. The selection is a
-        list of plate labels and ranges (e.g. "A1-C4" or "A1-H1, A4-H4, E5"), the stage position in
-        start_position is the position of the first well of that selection, and every other well is
-        placed from the constant shifts in X and Y.
-
-        return: list[dict]: List of points with keys:
-                - "name": grid label (e.g. "A1")
-                - "position": [x, y, z] coordinates
-        """
-
-        cfg = self.manual_points
-
-        required = ["wells", "shift_x", "shift_y", "start_position"]
-        for r in required:
-            if r not in cfg:
-                raise ValueError("Missing '{}' in manual_points".format(r))
-
-        wells = parse_well_list(cfg["wells"])
-
-        shift_x = cfg["shift_x"]
-        shift_y = cfg["shift_y"]
-        base_x, base_y, base_z = cfg["start_position"]
-
-        # Every well is placed relative to the first one of the selection rather than to its own
-        # position in the list, so the order the items were typed in cannot move the whole plate,
-        # and a selection that does not start at the top left corner stays where it belongs
-        anchor_letter, anchor_number = wells[0]
-
-        points = []
-        for letter, number in wells:
-            x = base_x + (number - anchor_number) * shift_x
-            y = base_y + (ord(letter) - ord(anchor_letter)) * shift_y
-            z = base_z
-            name = "{}{}".format(letter, number)
-            points.append({
-                "name": name,
-                "position": [x, y, z]
-            })
-        log("Generated {} manual grid points.".format(len(points)))
-        return points
-
-    def expand_with_subgrid(self, points):
-        """
-        Replaces every point with a grid of points centred on it, which is how one gets several
-        fields of view inside a single well.
-
-        The original point stays the centre of its own sub-grid, so switching a sub-grid on does not
-        move the wells that were already being visited. Names are the original name followed by the
-        row and column, which keeps them unique - and they have to be unique, because the name is
-        the only thing telling apart the overview image and the measurement file of two points in
-        the same run.
-
-        :param list points: points with the keys "name" and "position"
-        :return: list of points, named "A1_r1c1", "A1_r1c2" and so on
-        """
-        if not self.subgrid:
-            return points
-
-        required = ["rows", "cols", "shift_x", "shift_y"]
-
-        for key in required:
-            if key not in self.subgrid:
-                raise ValueError("Missing '{}' in subgrid".format(key))
-
-        rows = int(self.subgrid["rows"])
-        cols = int(self.subgrid["cols"])
-
-        if rows &lt; 1 or cols &lt; 1:
-            raise ValueError("Sub-grid needs at least one row and one column, got {}x{}".format(
-                rows, cols))
-
-        # 1x1 is how the GUI says 'no sub-grid', and it must not rename the points
-        if rows == 1 and cols == 1:
-            return points
-
-        shift_x = self.subgrid["shift_x"]
-        shift_y = self.subgrid["shift_y"]
-
-        # Offsets around the centre: three columns give [-shift, 0, +shift], two give
-        # [-shift/2, +shift/2], so the centre of the sub-grid is always the original point
-        x_offsets = [(c_idx - (cols - 1) / 2.0) * shift_x for c_idx in range(cols)]
-        y_offsets = [(r_idx - (rows - 1) / 2.0) * shift_y for r_idx in range(rows)]
-
-        expanded = []
-
-        for point in points:
-            x, y, z = point["position"]
-
-            for r_idx, y_offset in enumerate(y_offsets):
-                for c_idx, x_offset in enumerate(x_offsets):
-                    expanded.append({
-                        "name": "{}_r{}c{}".format(point["name"], r_idx + 1, c_idx + 1),
-                        "position": [x + x_offset, y + y_offset, z]
-                    })
-
-        log("Expanded {} points into {} with a {}x{} sub-grid".format(
-            len(points), len(expanded), rows, cols))
-
-        return expanded
-
-    def save_overview_points(self):
-        file_name = "points_for_overview.json"
-        saving_path = Path.Combine(self.measuring_points_path, file_name)
-        with open(saving_path, "w") as file:
-            json.dump(self.points_for_overview, file, indent=2)
-
-        log("Saved {} overview points to {}".format(len(self.points_for_overview), saving_path))
+# Zen, ZenWindow and ZenSpecialFolder exist in a macro's namespace and nowhere else - not in an
+# imported module's globals, not in builtins, and there is no __main__ to reach through. They are
+# collected here and handed down, exactly the way CONFIG is.
+ZEISS_API = ZenApi(Zen, ZenWindow, ZenSpecialFolder, CONFIG)
 
 
 ############################ GUI generation ##############################################################################
-def getshortfiles(filelist):
-    """
-    Gives the name of the files, without theirs extension.
-    :param filelist: list of the file names
-    :return: list of the same file names but without extension
-    """
-    files_short = []
-    for short in filelist:
-        files_short.append(Path.GetFileNameWithoutExtension(short))
-
-    return files_short
-
 
 # Getting the names of the availables .czexp files
-docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
-expfiles = Directory.GetFiles(Path.Combine(docfolder, 'Experiment Setups'), '*.czexp')
-experiments = getshortfiles(expfiles)
+experiments = list_experiments(ZEISS_API)
 
 window = ZenWindow()
 window.Initialize("Create grid for automated acquisition")
 window.Title = "Grig for automated acquisition"
 window.AddCheckbox('reading_mode', 'Do you want to read data points from experiments?', False)
 
-result_mode = window.Show()
-
-if result_mode.HasCanceled:
-    raise SystemExit
+result_mode = show_or_exit(window)
 
 window.ClearContent()
 window.Initialize("Parameters")
@@ -339,12 +66,9 @@ window.AddIntegerRange('subgrid_cols', 'Sub-grid columns in every point:', 1, 1,
 window.AddIntegerRange('subgrid_shift_x', 'Sub-grid shift in x [um]:', 300, 1, 20000)
 window.AddIntegerRange('subgrid_shift_y', 'Sub-grid shift in y [um]:', 300, 1, 20000)
 
-result_parameters = window.Show()
-
 # result_parameters, not result_mode: cancelling this window has to end the macro as well,
 # otherwise everything below is read out of a dialog that was just abandoned
-if not result_parameters or result_parameters.HasCanceled:
-    raise SystemExit
+result_parameters = show_or_exit(window)
 
 ############################ Initialization of the code above ##############################################################################
 
@@ -360,7 +84,7 @@ else:
     chosen_manual_points = {"wells": result_parameters.GetValue("wells"),
                             "shift_x": result_parameters.GetValue("shift_x"),
                             "shift_y": result_parameters.GetValue("shift_y"),
-                            "start_position": get_stage_focus_position()}
+                            "start_position": ZEISS_API.get_stage_focus_position()}
     chosen_experiment = None
 
 chosen_subgrid = {"rows": result_parameters.GetValue("subgrid_rows"),
@@ -372,18 +96,14 @@ chosen_subgrid = {"rows": result_parameters.GetValue("subgrid_rows"),
 # ZEN macro editor says very little. Nothing has moved at this point, so it is enough to say what
 # is wrong and stop.
 try:
-    grid_manual = AcquisitionGrid(CONFIG, mode=chosen_mode, experiment_name=chosen_experiment,
+    grid_manual = AcquisitionGrid(CONFIG, ZEISS_API, mode=chosen_mode,
+                                  experiment_name=chosen_experiment,
                                   manual_points=chosen_manual_points, subgrid=chosen_subgrid)
 
 except ValueError as error:
     log("Could not generate the points: {}".format(error))
 
-    problems = ZenWindow()
-    problems.Initialize("Cannot generate the points")
-    problems.AddMultiLineTextBox('problem', 'Fix this and run the macro again:', str(error))
-    problems.Show()
-
-    raise SystemExit
+    show_problems(ZEISS_API, [str(error)], "Cannot generate the points")
 
 # A sub-grid multiplies the number of points, and every one of them is a full overview with
 # everything main_macro then does on it. A 96 well plate with a 3x3 sub-grid is 864 overviews,
@@ -404,10 +124,7 @@ summary.AddMultiLineTextBox('points_summary',
                             'These points will be written to points_for_overview.json:',
                             summary_text)
 
-result_summary = summary.Show()
-
-if not result_summary or result_summary.HasCanceled:
-    raise SystemExit
+result_summary = show_or_exit(summary)
 
 grid_manual.save_overview_points()
 

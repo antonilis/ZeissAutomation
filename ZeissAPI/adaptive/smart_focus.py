@@ -1,6 +1,6 @@
 ###################### adaptive experiment plugin #####################################################
 # This file is NOT imported. main_macro reads it and runs it in its own namespace, so that Zen,
-# ZenWindow, ZeissApiProcessor, PathManager, CONFIG, log, json, time, uuid and the System.IO names
+# ZenWindow, ZEISS_API, PathManager, CONFIG, log, json, time, uuid and the System.IO names
 # are already defined here and must not be imported. That is the whole point: an adaptive experiment
 # needs the names ZEN injects into the macro, and a normally imported module cannot see them.
 #
@@ -26,7 +26,7 @@ def smart_focus(exp_item, obj_id, stage, obj, name):
     Zen.Acquisition.FindAutofocus(Zen.Acquisition.Experiments.ActiveExperiment, timeoutSeconds=0)
   
     
-    actual_position = ZeissApiProcessor.get_stage_focus_position()
+    actual_position = ZEISS_API.get_stage_focus_position()
 
     exp_obj.ClearTileRegionsAndPositions(0)
 

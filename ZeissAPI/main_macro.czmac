@@ -4,701 +4,78 @@
   <Version>1.0</Version>
   <Language>Python</Language>
   <Text>
+import sys
+from System.IO import File
+
+# json, time, uuid, Directory and Path are not used by this macro. They are here because the
+# adaptive plugins are run in THIS namespace and have always been able to count on them: fcs_zscan
+# builds a PathManager and writes its FCS_points.json with json and Path. Dropping an import here
+# silently breaks a plugin at the moment it runs, halfway through an acquisition, so the
+# plugin-visible surface is kept whole.
 import json
 import time
 import uuid
-import sys
-from System.IO import Directory, Path, File
+from System.IO import Directory, Path
 
 # ZEN keeps its Python engine alive between macro runs, so a module imported once stays in
 # sys.modules and an edited file in zen_lib goes unnoticed until ZEN itself is restarted.
 # Dropping the package here costs milliseconds and makes what runs always be what is on disk,
 # which is also what stops a half finished copy of the folder from looking like it worked.
+#
+# Every zen_lib import has to come AFTER this loop, PathManager included: a name bound before it
+# would keep pointing at the class from the previous run while everything else was re-read.
 for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
     del sys.modules[_cached]
 
-from zen_lib.runtime_config import RuntimeConfig, log, read_json as read_json_file
-from zen_lib.execute_python import PythonAnalysisRunner
+from zen_lib.runtime_config import RuntimeConfig, log
 from zen_lib.path_manager_main_macro import PathManager
+from zen_lib.zen_api import ZenApi
+from zen_lib.zen_gui import list_experiments, show_or_exit, show_problems
+from zen_lib.adaptive_loader import load_adaptive_functions
+from zen_lib.setup_store import (none_or_value, build_adaptive_experiments, validate_setup,
+                                 load_setup, save_setup)
+from zen_lib.acquisition_pipeline import AcquisitionPipeline
 
 
-# The configuration lives in the config folder next to this macro, inside the ZEN
-# runtime folder. It is located and read exactly once, here, and then handed down to
-# everything that needs a path: the pipeline, the path manager, the Python runner and
-# the adaptive experiment functions. Nothing else in this macro builds a path to the
-# config folder, and the destination of log() comes from it as well.
+###################### the two things everything else is handed ########################################
+# The configuration lives in the config folder next to this macro, inside the ZEN runtime folder.
+# It is located and read exactly once, here, and then handed down to everything that needs a path.
 CONFIG = RuntimeConfig()
 
-
-###################### class for API calls ###########################################################
-class ZeissApiProcessor:
-    """
-    Class which collects all of the main API calls to controll the microscope
-    """
-
-    @staticmethod
-    def read_json(path):
-        """
-        Kept so that the call sites below do not change, the implementation lives in runtime_config.
-        """
-        return read_json_file(path)
-
-    @staticmethod
-    def get_stage_focus_position():
-        """
-         Return current stage (X, Y) and focus (Z) positions as [x,y,z] list.
-         """
-        x = Zen.Devices.Stage.ActualPositionX
-        y = Zen.Devices.Stage.ActualPositionY
-        z = Zen.Devices.Focus.ActualPosition
-
-        return [x, y, z]
-
-    @staticmethod
-    def move(points_to_move):
-        """
-        Move stage and focus to the given [X, Y, Z] coordinates.
-        """
-        Zen.Devices.Stage.MoveTo(points_to_move[0], points_to_move[1])
-        Zen.Devices.Focus.MoveTo(points_to_move[2])
-
-    @staticmethod
-    def load_experiment(chosen_experiment):
-        """
-         Load and activate an experiment (.czexp file) by name.
-         """
-        exp = Zen.Acquisition.Experiments.GetByName(chosen_experiment)
-        exp.SetActive()
-        time.sleep(2)  # Rest for hardware adjustment
-        log("Loaded experiment {}".format(chosen_experiment))
-
-    @staticmethod
-    def execute_current_experiment():
-        """
-        Execute the currently active experiment.
-        """
-        Zen.Acquisition.Execute(Zen.Acquisition.Experiments.ActiveExperiment)
-        time.sleep(2)  # Rest for hardware adjustment
-
-    @staticmethod
-    def save_experiment_result(name, base_name=None):
-        """
-        Saves the results of the experiments in the results folder. For the .czi files it utilizes the API call, but for .fcs and .raw files
-        it moves them from autosave folder.
-        """
-        document = Zen.Application.Documents.ActiveDocument
-
-        if document is not None:  # The document is None for the .fcs experiments
-            document.Save(name)
-        else:
-            files = PathManager(CONFIG).get_latest_fcs_and_raws()
-
-            log(str(files))
-
-            for file in files:
-                file_name = Path.GetFileNameWithoutExtension(file)
-                extenion = Path.GetExtension(file)
-
-                parts = file_name.split("_")
-
-                if len(parts) > 1:
-
-                    final_name = "{}_{}{}".format(base_name, "_".join(parts[1:]), extenion)
-
-                else:
-
-                    final_name = "{}{}".format(base_name, extenion)
-
-                File.Move(file, Path.Combine(name, final_name))
-
-
-# ==============================================================================
-# PIPELINE CLASS
-# ==============================================================================
-
-class AcquisitionPipeline:
-    """
-    A comprehensive pipeline encompassing object detection, motion control toward the detected objects,
-    visualization, and post-processing steps involving reanalysis of spatial coordinates (XY and Z)
-    and quantitative measurements of the identified objects.
-
-    param RuntimeConfig config: configuration built by the macro. The pipeline never locates
-    the config folder itself, it only passes this object on to its helpers.
-    param dict adaptive_experiments: experiment name to the function that rewrites it,
-    already resolved. It arrives resolved, so that a mistake in it is reported before the
-    stage moves rather than in the middle of a run.
-    """
-
-    def __init__(self,
-                 config,
-                 object_visualization_experiment=None,
-                 reanalysis_dict=None,
-                 post_reanalysis_experiments=None, adaptive_experiments=None):
-
-        self.config = config
-
-        # arguments collecting the experiments names and arguments for Python analysis, which will be used at different
-        # stages of the pipeline
-        self.object_visualization_experiment = object_visualization_experiment
-        self.reanalysis_dict = reanalysis_dict
-        self.post_reanalysis_experiments = post_reanalysis_experiments or []
-        self.adaptive_experiments = adaptive_experiments or {}
-
-        # Initializing objects for the directories management for reading/saving the results and for initializing python
-        # with the arguments. Both receive the already loaded configuration.
-        self.path_manager = PathManager(self.config)
-        self.python_analysis_runner = PythonAnalysisRunner(self.config)
-
-
-        self.points_for_overview = self.get_overview_points() # points on which the pipeline will be executed
-        self.overview_id = str(uuid.uuid4())
-        self.measurements_objects = {}
-
-        # Said out loud, because an adaptive experiment that was never armed is otherwise
-        # invisible: it simply does not run, and leaves nothing behind explaining why
-        if not self.adaptive_experiments:
-            log("Pipeline built with no adaptive experiments")
-        else:
-            log("Pipeline built with adaptive experiments: {}".format(", ".join(
-                ["{} rewriting {}".format(function.__name__, experiment)
-                 for experiment, function in sorted(self.adaptive_experiments.items())])))
-
-    def get_overview_points(self):
-        """
-        Reads the points in which the full pipeline needs to be executed.
-        """
-        points_path = Path.Combine(self.path_manager.measurements, "points_for_overview.json")
-
-        if File.Exists(points_path):
-
-            points_for_overview = ZeissApiProcessor.read_json(points_path)
-        else:
-
-            points_for_overview = None
-
-        return points_for_overview
-
-
-    def acquire_overview(self, overview_experiment, analysis_args=None, selection_args=None, name=None):
-
-        """
-        Method for loading, executing and saving the overview experiment. Activating the analysis of the results and
-        reading the JSON with positions of the objects for the measurement from Python analysis.
-
-        param str selection_args: name of a preset in selection_config.json, deciding which of the
-        found objects are worth measuring, or None to measure all of them
-        """
-
-        log('Initializing overview experiment')
-
-        ZeissApiProcessor.load_experiment(overview_experiment)
-        ZeissApiProcessor.execute_current_experiment()
-
-        # The name of the overview image is the combination of pipeline overview id and the name of the point in which
-        # the pipeline is executed
-        overview_file_name = self.path_manager.overview_image_path(self.overview_id, name)
-        overview_analysis_path = self.path_manager.temp_file_path(self.overview_id, None, name)
-
-        ZeissApiProcessor.save_experiment_result(overview_file_name)
-
-        log('Overview experiment finished')
-
-        if analysis_args:
-            args_overview = {'type': 'overview', 'file_path': overview_file_name,
-                             'saving_path': overview_analysis_path, 'analysis_arguments': analysis_args,
-                             'selection_arguments': selection_args, 'is_FCS': False}
-
-            log("Initializing the overview image analysis: {}".format(args_overview))
-            self.python_analysis_runner.run(**args_overview)
-
-            # Loading JSON with the objects positions, crucial for the capture_objects method
-            self.measurements_objects = self.load_measurements(self.overview_id, name=name)
-
-        log("Overview finished")
-
-    def load_measurements(self, obj_id, reanalysis_type=None, name=None):
-        """
-        Loads JSON files for the reanalysis of the objects positions.
-        """
-        points_path = self.path_manager.temp_file_path(obj_id, reanalysis_type, name)
-
-        data = ZeissApiProcessor.read_json(points_path)
-        log("Loaded measurement data for object {} [{}] from {}".format(
-            obj_id, reanalysis_type or "overview", points_path))
-
-        return data
-
-    def capture_objects(self, object_ids=None, name=None):
-        """
-        Method for performing objects visualizationexperiment, calling functions for reanalysis of xy and z position and
-        executing all the post reanalysis experiments on all of founded objects in the pipeline
-        :param object_ids: uuids of the founded objects in the current pipeline position
-        :param name: Name of the position in which the pipeline will be executed
-        :return: None
-        """
-
-        if not self.measurements_objects:
-            log("No overview results for {}".format(self.overview_id))
-            return
-
-        if object_ids is None:
-            # The analysis side marks every object it found with 'selected'. Rejected ones stay in the
-            # JSON together with whatever was measured on them, they are simply not driven to.
-            object_ids = [obj_id for obj_id, obj in self.measurements_objects.items() if obj['selected']]
-
-            skipped = len(self.measurements_objects) - len(object_ids)
-
-            if skipped:
-                log("Object selection rejected {} of {} objects".format(skipped, len(self.measurements_objects)))
-
-        log("Initialized capturing objects")
-
-        for obj_id in object_ids:
-            obj = self.measurements_objects[obj_id]
-            ZeissApiProcessor.move(obj["position"])
-
-            # --- 1️ Do object visualization experiment, which results are used for xy-reanalysis ---
-            self._run_experiment(obj_id, self.object_visualization_experiment, stage='_exp', name=name, obj=obj)
-
-            log('Finished visualization of object {}'.format(obj_id))
-
-            # --- 2 Reanalysis ---
-            if self.reanalysis_dict is not None:
-                log("Initialized reanalysis of object: {}".format(obj_id))
-
-                # Reanalysis XY
-                if self.reanalysis_dict.get('xy'):
-                    self._perform_reanalysis_xy(obj_id, name)
-
-                # Reanalysis Z. Both halves are required: without an experiment there is nothing to
-                # acquire and load_experiment would be handed None, without an analysis there is
-                # nothing to read the corrected position from.
-                z_data = self.reanalysis_dict.get('z')
-
-                if z_data and z_data.get('z_experiment') is not None and z_data.get('z_analysis') is not None:
-                    self._perform_reanalysis_z(obj_id, name, obj)
-
-                elif z_data and (z_data.get('z_experiment') is not None or z_data.get('z_analysis') is not None):
-                    log("Skipping Z reanalysis for object {}: it needs both an experiment and an "
-                        "analysis, got experiment={} and analysis={}".format(
-                            obj_id, z_data.get('z_experiment'), z_data.get('z_analysis')))
-
-            for exp_name in self.post_reanalysis_experiments:
-                log('Running experiment {} on object {}'.format(exp_name, obj_id, obj=obj))
-
-                self._run_experiment(obj_id, exp_name, stage="_post", name=name, obj=obj)
-
-            log("Finished capturing object {}".format(obj_id))
-            # Clearing the experiments from the view for resources saving
-            Zen.Application.Documents.RemoveAll()
-
-    def _perform_reanalysis_xy(self, obj_id, name=None, obj=None):
-        """
-        Function responsible for initializing Python xy reanalysis on object from object_visualization experiment result and
-        reading the new-corrected positions of object.
-        """
-        log('Initialized reanalysis of object {}'.format(obj_id))
-
-        file_name = self.path_manager.result_path(obj_id, '_exp', self.object_visualization_experiment, name)
-        saving_path = self.path_manager.temp_file_path(obj_id, 'xy', name)
-
-        # The type has to be reanalysis_xy, not overview: it is what makes the analysis
-        # side reduce several detections to the one nearest the current stage position,
-        # instead of returning them all and letting the line below pick an arbitrary one.
-        args_xy = {'type': 'reanalysis_xy', 'file_path': file_name,
-                   'saving_path': saving_path, 'analysis_arguments': self.reanalysis_dict['xy'], 'is_FCS': False}
-
-        log("Running XY reanalysis script with args: {}".format(args_xy))
-        self.python_analysis_runner.run(**args_xy)
-
-        new_data = self.load_measurements(obj_id, reanalysis_type="xy", name=name)
-
-        if not new_data:
-            log("Warning: No XY reanalysis points found for object {}".format(obj_id))
-            return
-
-        new_position = new_data[list(new_data.keys())[0]]['position']
-
-        ZeissApiProcessor.move(new_position)
-        log("Moved stage to XY reanalysis position for object {}".format(obj_id))
-
-    def _perform_reanalysis_z(self, obj_id, name=None, obj=None):
-        """
-        Function responsible for executing the z-reanalysis experiments, initializing the Python analysis and reading
-        the JSON with new positions
-        """
-
-        z_cfg = self.reanalysis_dict['z']
-
-        z_exp = z_cfg['z_experiment']
-        z_analysis = z_cfg['z_analysis']
-
-        self._run_experiment(obj_id, z_exp, stage="_reanalysis_z", name=name, obj=obj)
-
-        file_name = self.path_manager.result_path(obj_id, "_reanalysis_z", z_exp, name)
-        saving_path = self.path_manager.temp_file_path(obj_id, 'z', name)
-
-        args_z = {'type': 'reanalysis_z', 'file_path': file_name, 'saving_path': saving_path,
-                  'analysis_arguments': z_analysis, 'is_FCS': z_cfg['is_FCS']}
-
-        log("Running Z reanalysis script with args: {}".format(args_z))
-        self.python_analysis_runner.run(**args_z)
-
-        z_data = self.load_measurements(obj_id, reanalysis_type="z", name=name)
-
-        new_positions = z_data[list(z_data.keys())[0]]['position']
-
-        ZeissApiProcessor.move(new_positions)
-
-        log("Moved stage to Z reanalysis position for object {}".format(obj_id))
-
-        log("Finished reanalysis for object {}".format(obj_id))
-
-    def _run_experiment(self, obj_id, exp_item, stage, name=None, obj=None):
-        """
-        Function responsible for loading, executing experiments and saving the results in correct directory with
-        proper name. If an adaptive function is paired with this experiment it runs first and rewrites
-        it, using the properties of the object the experiment is about to be run on.
-        """
-
-        adaptive = self.adaptive_experiments.get(exp_item)
-
-        if adaptive is not None:
-            log('Doing adaptive experiment {} on {}'.format(adaptive.__name__, exp_item))
-
-            adaptive(exp_item, obj_id, stage, obj, name)
-
-            log('Rewrote experiment {} with {}'.format(exp_item, adaptive.__name__))
-
-        ZeissApiProcessor.load_experiment(exp_item)
-        ZeissApiProcessor.execute_current_experiment()
-
-        # Different approaches for saving for .fcs files (which gives None) and .czi files
-        if Zen.Application.Documents.ActiveDocument is None:
-
-            file_name = self.path_manager.result_dir(obj_id, stage, name)
-            base_name = Path.GetFileNameWithoutExtension(self.path_manager.result_path(obj_id, stage, exp_item, name))
-
-        else:
-            file_name = self.path_manager.result_path(obj_id, stage, exp_item, name)
-            base_name = None
-
-        ZeissApiProcessor.save_experiment_result(file_name, base_name)
-
-        log("Saved the result: {}".format(file_name))
-
-
-################################## Loading the adaptive experiments ##########################################
-# An adaptive experiment is a function that rewrites an experiment just before it runs, using the
-# properties of the object it is about to be run on. Those functions live in their own folder next
-# to this macro, one file each, and are NOT imported: a normally imported module cannot see Zen,
-# ZeissApiProcessor or any of the other names ZEN injects into a macro. Each file is instead read
-# and run in a namespace that already holds them, which is the same thing as pasting its text in
-# here, only done by the code instead of by hand.
-
-
-# Adaptive experiments are read from their files and run here, at the top level of this macro.
-#
-# The experiment editing members - ClearExperimentRegionsAndPositions, AddSinglePosition and
-# about twenty more - are .NET EXTENSION METHODS on ZenExperiment, declared in
-# Zeiss.Micro.LM.Scripting. IronPython only surfaces extension methods in a compilation unit
-# that imported their namespace, and ZEN does that when it compiles this macro. A plugin is
-# compiled separately, gets its own module context, and therefore sees 71 members instead of
-# 96 - the same object, the same type, the same globals, and no way to tell from the outside.
-#
-# The three lines below are prepended to every plugin so that its own compilation unit imports
-# them too. This is what makes an adaptive experiment work from a .py file at all. Measured on
-# the instrument: without it a probe saw 71 members, with it 95.
-PLUGIN_PREAMBLE = "import clr; import Zeiss.Micro.LM.Scripting; clr.ImportExtensions(Zeiss.Micro.LM.Scripting)\n"
-
-ADAPTIVE_FUNCTIONS = {}
-
-
-def register_adaptive(function):
-    """
-    Collects an adaptive experiment. It is the counterpart of @register_class on the analysis
-    side: the name of the decorated function is what the dropdown offers.
-    :param function: the decorated function
-    :return: the same function, unchanged
-    """
-    ADAPTIVE_FUNCTIONS[function.__name__] = function
-
-    return function
-
-
-if not Directory.Exists(CONFIG.adaptive_path):
-    log("No adaptive experiments: {} does not exist".format(CONFIG.adaptive_path))
-
-else:
-    for _plugin_path in Directory.GetFiles(CONFIG.adaptive_path, "*.py"):
-
-        # Files whose name starts with an underscore are helpers, not experiments
-        if Path.GetFileName(_plugin_path).startswith("_"):
-            continue
-
-        try:
-            with open(_plugin_path, "r") as _plugin_file:
-                _plugin_source = _plugin_file.read()
-
-            # The preamble is one line, so a line number in a plugin traceback is one higher
-            # than the same line in the file itself
-            exec(PLUGIN_PREAMBLE + _plugin_source)
-
-        except Exception as _error:
-            log("Adaptive experiment {} could not be loaded: {}".format(_plugin_path, _error))
-
-    log("Loaded adaptive experiments: {}".format(", ".join(sorted(ADAPTIVE_FUNCTIONS)) or "none"))
+# ZEN injects about 500 names into THIS namespace - Zen, ZenWindow, ZenSpecialFolder and the rest -
+# and an imported module gets none of them. That was measured, not assumed: probe_zen_context.czmac
+# found them absent from a module's globals, absent from builtins, and there is no __main__ to
+# reach through. So they are collected here and handed down the same way CONFIG is. Nothing in
+# zen_lib reaches for a global that only exists inside a macro.
+ZEISS_API = ZenApi(Zen, ZenWindow, ZenSpecialFolder, CONFIG)
+
+# The adaptive experiment plugins are read from their files and run in THIS namespace, which is why
+# the loader is given globals(): a plugin needs Zen and ZEISS_API, and running it anywhere else
+# would put it somewhere those names have never been. The loader also puts @register_adaptive here
+# before the plugins run, so a plugin file needs nothing but the decorator.
+ADAPTIVE_FUNCTIONS = load_adaptive_functions(CONFIG, globals())
 
 
 ################################## Reading and checking the GUI selections #######################################
-# Everything the user can get wrong is caught here, before the pipeline is built and before
-# anything moves. A run started from this macro is unattended, so a bad combination of
-# settings that only surfaces halfway through costs an experiment and a plate position.
-
-
-def none_or_value(x):
-    return None if x == "None" else x
-
-
-def build_adaptive_experiments(pairs):
-    """
-    Resolves the pairs the GUI collected into the mapping the pipeline uses: experiment name to
-    the function that rewrites it. Keyed by the experiment, because two functions rewriting the
-    same experiment would fight over it and the second would quietly win.
-    :param list pairs: list of [function name, experiment name] pairs, possibly empty
-    :return: tuple (dict of experiment name to function, error message or None)
-    """
-    adaptive_experiments = {}
-
-    for pair in pairs:
-        function_name, target_experiment = pair[0], pair[1]
-
-        function = ADAPTIVE_FUNCTIONS.get(function_name)
-
-        if function is None:
-            return {}, "The adaptive function '{}' was not loaded from {}. Available: {}".format(
-                function_name, CONFIG.adaptive_path, ", ".join(sorted(ADAPTIVE_FUNCTIONS)) or "none")
-
-        if target_experiment is None:
-            return {}, "The adaptive function '{}' has no experiment to rewrite.".format(function_name)
-
-        if target_experiment in adaptive_experiments:
-            return {}, "The experiment '{}' is paired with two adaptive functions, '{}' and " \
-                       "'{}'. Only one function can rewrite an experiment.".format(
-                           target_experiment,
-                           adaptive_experiments[target_experiment].__name__, function_name)
-
-        adaptive_experiments[target_experiment] = function
-
-    return adaptive_experiments, None
-
-
-def validate_setup(setup):
-    """
-    Collects everything that is wrong with the chosen combination of settings.
-    :param dict setup: the selections read from the GUI
-    :return: list of messages, empty when the setup can be run
-    """
-    problems = []
-
-    z_experiment = setup['z_experiment']
-    z_analysis = setup['z_analysis']
-
-    if (z_experiment is None) != (z_analysis is None):
-        problems.append(
-            "Z reanalysis needs both an experiment and an analysis, or neither of them. The chosen "
-            "experiment is {} and the chosen analysis is {}.".format(z_experiment, z_analysis))
-
-    # Without object finding the macro visits the overview points and does whatever was asked
-    # for at each of them. A Z reanalysis alone is enough, post-analysis experiments alone are
-    # enough, and so is both. Only asking for neither is pointless: the stage would drive from
-    # point to point without acquiring anything.
-    if not setup['finding_objects'] and z_experiment is None and not setup['post_experiments']:
-        problems.append(
-            "With finding objects mode switched off there has to be either a Z reanalysis or at "
-            "least one post-analysis experiment, otherwise this macro would only move the stage "
-            "from point to point without acquiring anything.")
-
-    if setup['multiple_overviews']:
-        points_path = Path.Combine(CONFIG.measurements, "points_for_overview.json")
-
-        if not File.Exists(points_path):
-            problems.append(
-                "Multiple overviews mode needs the file {}. Run find_overview_positions.czmac "
-                "first, or switch the mode off.".format(points_path))
-
-        else:
-            try:
-                overview_points = read_json_file(points_path)
-            except Exception as error:
-                overview_points = None
-                problems.append("The overview points file {} could not be read: {}".format(points_path, error))
-
-            # An empty list would send the macro straight through every loop below without
-            # acquiring anything, and look like a run that simply finished very quickly
-            if overview_points is not None and not overview_points:
-                problems.append(
-                    "The overview points file {} contains no points. Run find_overview_positions.czmac "
-                    "again, or switch multiple overviews mode off.".format(points_path))
-
-    # A preset without chosen_analysis makes the analysis side fall back to a name that is not
-    # a registered algorithm, which only shows up once the overview has already been acquired
-    for label, preset_name in (("overview analysis", setup['overview_analysis']),
-                               ("XY reanalysis", setup['reanalysis_xy']),
-                               ("Z analysis", setup['z_analysis'])):
-        if preset_name is None:
-            continue
-
-        preset = processing_data.get(preset_name)
-
-        if preset is None:
-            problems.append(
-                "The {} preset '{}' is not in processing_config.json.".format(label, preset_name))
-
-        elif not preset.get('chosen_analysis'):
-            problems.append(
-                "The {} preset '{}' has no 'chosen_analysis' key, so the analysis side would not "
-                "know which algorithm to run.".format(label, preset_name))
-
-    # The object selection is optional and lives in its own config file, but a preset that is
-    # named and then not found would only show up once the overview had been acquired
-    selection_name = setup['overview_selection']
-
-    if selection_name is not None:
-        selection_preset = selection_data.get(selection_name)
-
-        if selection_preset is None:
-            problems.append(
-                "The object selection preset '{}' is not in selection_config.json.".format(selection_name))
-
-        elif not selection_preset.get('chosen_selection'):
-            problems.append(
-                "The object selection preset '{}' has no 'chosen_selection' key, so the analysis "
-                "side would not know which algorithm to run.".format(selection_name))
-
-    # A loaded setup can name an experiment that has since been renamed or deleted in ZEN, and
-    # Zen.Acquisition.Experiments.GetByName then returns null, which only surfaces as
-    # "Value cannot be null" once the run is already going. Names coming from the dropdowns are
-    # always real, so this only ever catches a setup that was read back from a file.
-    named_experiments = [("overview", setup['overview_experiment']),
-                         ("object visualization", setup['visualization_experiment']),
-                         ("Z", setup['z_experiment'])]
-
-    named_experiments += [("post-analysis", name) for name in setup['post_experiments']]
-
-    named_experiments += [("adaptive", experiment) for experiment in setup['adaptive_experiments']]
-
-    for label, experiment_name in named_experiments:
-        if experiment_name is not None and experiment_name not in experiments:
-            problems.append(
-                "The {} experiment '{}' is no longer among the experiments saved in ZEN.".format(
-                    label, experiment_name))
-
-    return problems
-
-
-# Keys a saved setup has to carry. A file written by an older version of this macro would
-# otherwise fail somewhere inside validate_setup, with a message about the wrong thing.
-REQUIRED_SETUP_KEYS = ('finding_objects', 'multiple_overviews', 'overview_experiment',
-                       'overview_analysis', 'overview_selection', 'visualization_experiment',
-                       'reanalysis_xy', 'z_experiment', 'z_analysis', 'is_FCS',
-                       'post_experiments', 'adaptive_pairs')
-
-
-def load_setup(path):
-    """
-    Reads back the settings of the last run. Anything that makes the file unusable ends the macro
-    right here, naming the file, instead of halfway through an acquisition.
-    :param str path: full path to the saved setup
-    :return: tuple (setup dict, error message from the adaptive experiment or None)
-    """
-    log("Loading the setup of the last run from {}".format(path))
-
-    try:
-        setup = read_json_file(path)
-    except Exception as error:
-        show_problems(["The saved setup {} could not be read: {}".format(path, error)])
-
-    missing = [key for key in REQUIRED_SETUP_KEYS if key not in setup]
-
-    if missing:
-        show_problems(
-            ["The saved setup {} is missing the keys: {}. It was most likely written by an older "
-             "version of this macro. Run once without loading it and it will be written "
-             "again.".format(path, ", ".join(missing))])
-
-    # Functions cannot be written to a file, so the saved setup names the plugins instead and the
-    # pairs are resolved again here, exactly as they are when they come from the dropdowns
-    adaptive_experiments, adaptive_error = build_adaptive_experiments(setup['adaptive_pairs'])
-
-    setup['adaptive_experiments'] = adaptive_experiments
-
-    return setup, adaptive_error
-
-
-def save_setup(path, setup):
-    """
-    Records the confirmed settings, so that the next run can start from them. The evaluated
-    adaptive experiments are left out because they hold functions; 'adaptive_pairs', which names
-    them, is saved in their place.
-    :param str path: full path to write to
-    :param dict setup: the confirmed selections
-    :return: None
-    """
-    saveable = dict(setup)
-    saveable.pop('adaptive_experiments', None)
-
-    with open(path, "w") as file:
-        json.dump(saveable, file, indent=2)
-
-
-def show_problems(problems):
-    """
-    Shows what is wrong with the setup and ends the macro. Nothing has moved at this point,
-    which is the whole reason these checks run before the pipeline is built.
-    :param list problems: messages to show
-    :return: None
-    """
-    log("Setup rejected: {}".format(problems))
-
-    problems_window = ZenWindow()
-    problems_window.Initialize("Cannot start")
-    problems_window.AddMultiLineTextBox('problems_box', 'Fix these and run the macro again:',
-                                        "\n\n".join(problems))
-    problems_window.Show()
-
-    raise SystemExit
-
-
-################################## Code for generating GUI #######################################
-
+# Everything the user can get wrong is caught before the pipeline is built and before anything
+# moves. A run started from this macro is unattended, so a bad combination of settings that only
+# surfaces halfway through costs an experiment and a plate position. The checks themselves live in
+# zen_lib.setup_store; what stays here is the dialogue.
 
 processing_data = CONFIG.processing_config()
 selection_data = CONFIG.selection_config()
 
-
-def getshortfiles(filelist):
-    """
-    Gives the name of the files, without theirs extension.
-    :param filelist: list of the file names
-    :return: list of the same file names but without extension
-    """
-    files_short = []
-    for short in filelist:
-        files_short.append(Path.GetFileNameWithoutExtension(short))
-
-    return files_short
-
 # Finding the names of the user saved experiments .czexp
-docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
-expfiles = Directory.GetFiles(Path.Combine(docfolder, 'Experiment Setups'), '*.czexp')
-experiments = getshortfiles(expfiles)
+experiments = list_experiments(ZEISS_API)
 
 # Without any experiment the dropdowns below would have nothing to offer, and every
 # GetValue on them would hand None to Zen.Acquisition.Experiments.GetByName
 if not experiments:
-    show_problems(["No .czexp experiments were found in the ZEN Experiment Setups folder, "
-                   "so there is nothing for this macro to run."])
+    show_problems(ZEISS_API, ["No .czexp experiments were found in the ZEN Experiment Setups folder, "
+                              "so there is nothing for this macro to run."])
+
+
+################################## Code for generating GUI #######################################
 
 # === window 0: reusing the settings of the last run ===
 # Offered only when there is something to load. Choosing it skips the windows below entirely:
@@ -712,15 +89,19 @@ if File.Exists(CONFIG.last_setup_path):
     window.Initialize("Automated Acquisition")
     window.AddCheckbox('load_last_setup', 'Load the settings of the last run:', False)
 
-    result_load = window.Show()
-
-    if result_load.HasCanceled:
-        raise SystemExit
+    result_load = show_or_exit(window)
 
     load_last = result_load.GetValue('load_last_setup')
 
 if load_last:
-    setup, adaptive_error = load_setup(CONFIG.last_setup_path)
+    # load_setup raises rather than opening a window of its own, so that everything the user is
+    # shown is decided here, in the macro, next to the rest of the dialogue.
+    try:
+        setup, adaptive_error = load_setup(CONFIG.last_setup_path, ADAPTIVE_FUNCTIONS,
+                                           CONFIG.adaptive_path)
+
+    except ValueError as error:
+        show_problems(ZEISS_API, [str(error)])
 
 else:
     # === window 1: choosing work modes ===
@@ -731,10 +112,7 @@ else:
     window.AddCheckbox('finding_objects_mode', 'Finding objects mode:', True)
     window.AddCheckbox('multiple_overviews_mode', 'Multiple overviews mode:', True)
 
-    result_mode = window.Show()
-
-    if result_mode.HasCanceled:
-        raise SystemExit
+    result_mode = show_or_exit(window)
 
     finding_objects = result_mode.GetValue('finding_objects_mode')
     multiple_overviews = result_mode.GetValue('multiple_overviews_mode')
@@ -757,10 +135,7 @@ else:
 
     window.AddCheckbox('use_adaptive', 'Use adaptive experiments:', False)
 
-    result_setup = window.Show()
-
-    if result_setup.HasCanceled:
-        raise SystemExit
+    result_setup = show_or_exit(window)
 
     # === window 3: choosing post-analysis experiments ===
     selected_experiments = []
@@ -778,12 +153,9 @@ else:
         window.AddMultiLineTextBox('chosen_post_exps', 'Currently selected:', chosen_text)
         window.AddDropDown('action', 'What next?', ['Add another', 'Done', 'Clear all'], 0)
 
-        result_post = window.Show()
-
         # Cancelling ends the macro, the same as in the windows above. Continuing with a half
         # filled list would silently run something the user was in the middle of changing.
-        if not result_post or result_post.HasCanceled:
-            raise SystemExit
+        result_post = show_or_exit(window)
 
         action = result_post.GetValue('action')
         new_exp = result_post.GetValue('post_exp_name')
@@ -844,10 +216,7 @@ else:
 
             window.AddDropDown('action', 'What next?', ['Add another', 'Done', 'Clear all'], 0)
 
-            result_adaptive = window.Show()
-
-            if not result_adaptive or result_adaptive.HasCanceled:
-                raise SystemExit
+            result_adaptive = show_or_exit(window)
 
             action = result_adaptive.GetValue('action')
             new_function = none_or_value(result_adaptive.GetValue('adaptive_function'))
@@ -881,7 +250,8 @@ else:
     # Everything below reads this dictionary and nothing calls GetValue again, so the summary
     # window cannot end up describing something other than what the pipeline is given.
 
-    adaptive_experiments, adaptive_error = build_adaptive_experiments(adaptive_pairs)
+    adaptive_experiments, adaptive_error = build_adaptive_experiments(
+        adaptive_pairs, ADAPTIVE_FUNCTIONS, CONFIG.adaptive_path)
 
     setup = {
         'finding_objects': finding_objects,
@@ -903,13 +273,13 @@ else:
 # reads it, instead of spelling the condition out again in each place that runs one.
 setup['z_reanalysis'] = setup['z_experiment'] is not None and setup['z_analysis'] is not None
 
-problems = validate_setup(setup)
+problems = validate_setup(setup, CONFIG, processing_data, selection_data, experiments)
 
 if adaptive_error:
     problems.insert(0, adaptive_error)
 
 if problems:
-    show_problems(problems)
+    show_problems(ZEISS_API, problems)
 
 log("Setup accepted: {}".format(setup))
 
@@ -951,11 +321,8 @@ else:
 
 window.AddMultiLineTextBox('summary_box', 'Summary:', summary_text)
 
-result_summary = window.Show()
-
 # This is the last point at which the run can still be called off
-if not result_summary or result_summary.HasCanceled:
-    raise SystemExit
+result_summary = show_or_exit(window)
 
 # What was confirmed becomes the starting point of the next run. Recording it must never cost
 # an acquisition, so a failure to write is logged and the run starts anyway.
@@ -975,7 +342,7 @@ failed_points = []
 
 if setup['finding_objects']:
 
-    pipeline = AcquisitionPipeline(CONFIG,
+    pipeline = AcquisitionPipeline(CONFIG, ZEISS_API,
                                    object_visualization_experiment=setup['visualization_experiment'],
                                    reanalysis_dict={'xy': setup['reanalysis_xy'],
                                                     'z': {'z_experiment': setup['z_experiment'],
@@ -988,7 +355,7 @@ if setup['finding_objects']:
     if setup['multiple_overviews']:
         for point in pipeline.points_for_overview:
             try:
-                ZeissApiProcessor.move(point['position'])
+                ZEISS_API.move(point['position'])
 
                 pipeline.acquire_overview(overview_experiment=setup['overview_experiment'],
                                           analysis_args=setup['overview_analysis'],
@@ -1006,7 +373,7 @@ if setup['finding_objects']:
         pipeline.capture_objects(name=None)
 
 else:
-    pipeline = AcquisitionPipeline(CONFIG,
+    pipeline = AcquisitionPipeline(CONFIG, ZEISS_API,
         reanalysis_dict={'z': {'z_experiment': setup['z_experiment'],
                                'z_analysis': setup['z_analysis'],
                                'is_FCS': setup['is_FCS']}},
@@ -1017,7 +384,7 @@ else:
         for point in pipeline.points_for_overview:
 
             try:
-                ZeissApiProcessor.move(point['position'])
+                ZEISS_API.move(point['position'])
 
                 # The Z reanalysis is optional here: visiting the overview points and running the
                 # post-analysis experiments on each of them is a valid run on its own
@@ -1032,7 +399,7 @@ else:
                 failed_points.append(point['name'])
                 log("Point {} failed and was skipped: {}".format(point['name'], error))
 
-            Zen.Application.Documents.RemoveAll()
+            ZEISS_API.remove_all_documents()
 
     else:
 
@@ -1042,7 +409,7 @@ else:
         for experiment in setup['post_experiments']:
             pipeline._run_experiment(obj_id=pipeline.overview_id, exp_item=experiment, stage='_post')
 
-        Zen.Application.Documents.RemoveAll()  #
+        ZEISS_API.remove_all_documents()
 
 
 if failed_points:
