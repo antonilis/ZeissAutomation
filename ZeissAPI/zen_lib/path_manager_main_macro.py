@@ -64,13 +64,23 @@ class PathManager:
     def result_dir(self, obj_id, stage=None, name=None):
         """
         Return the result path based on object ID.
+
+        obj_id is None when there is no object to file the result under - the run has object
+        finding switched off and the pipeline is only visiting overview points, so everything
+        acquired belongs to the point itself. The obj_ folder is then left out rather than named
+        after the overview's uuid, which would be a directory describing something that does not
+        exist. What tells the results apart in that case is the point name and the experiment,
+        both of which are already in the file name.
         """
         if name:
             base = Path.Combine(self.results, name)
         else:
             base = self.results
 
-        folder = Path.Combine(base, "obj_{}".format(obj_id))
+        if obj_id is None:
+            folder = base
+        else:
+            folder = Path.Combine(base, "obj_{}".format(obj_id))
 
         if not Directory.Exists(folder):
             Directory.CreateDirectory(folder)
@@ -80,6 +90,9 @@ class PathManager:
     def result_path(self, obj_id, stage, measurement, name=None):
         """
         Return the result full file path based on object ID and the stage of experiment.
+
+        As in result_dir, obj_id is None when the run has no objects, and the id is then left out
+        of the file name as well as out of the folder.
         """
 
         folder = self.result_dir(obj_id, stage, name)
@@ -89,10 +102,11 @@ class PathManager:
         else:
             suffix = stage
 
-        if name:
-            file_name = "{}_{}_{}{}.czi".format(name, obj_id, measurement, suffix)
-        else:
-            file_name = "{}_{}{}.czi".format(obj_id, measurement, suffix)
+        # Filtered on truth rather than on "is not None", which is what the two branches this
+        # replaced did with name: an empty name has always meant the same as no name at all.
+        parts = [part for part in (name, obj_id, measurement) if part]
+
+        file_name = "{}{}.czi".format("_".join(parts), suffix)
 
         return Path.Combine(folder, file_name)
 

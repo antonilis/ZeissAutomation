@@ -25,6 +25,9 @@ class AcquisitionPipeline:
     param dict adaptive_experiments: experiment name to the function that rewrites it,
     already resolved. It arrives resolved, so that a mistake in it is reported before the
     stage moves rather than in the middle of a run.
+    param bool per_object_results: whether the results are filed under the object they were
+    acquired on. False for a run with object finding switched off, where there is no object and
+    everything acquired belongs to the overview point itself.
     """
 
     def __init__(self,
@@ -32,10 +35,12 @@ class AcquisitionPipeline:
                  zeiss_api,
                  object_visualization_experiment=None,
                  reanalysis_dict=None,
-                 post_reanalysis_experiments=None, adaptive_experiments=None):
+                 post_reanalysis_experiments=None, adaptive_experiments=None,
+                 per_object_results=True):
 
         self.config = config
         self.zeiss_api = zeiss_api
+        self.per_object_results = per_object_results
 
         # arguments collecting the experiments names and arguments for Python analysis, which will be used at different
         # stages of the pipeline
@@ -61,6 +66,23 @@ class AcquisitionPipeline:
             log("Pipeline built with adaptive experiments: {}".format(", ".join(
                 ["{} rewriting {}".format(function.__name__, experiment)
                  for experiment, function in sorted(self.adaptive_experiments.items())])))
+
+    def _result_id(self, obj_id):
+        """
+        The id a result path is built from, which is not always the id of the thing being measured.
+
+        With object finding switched off there is no object: the pipeline visits overview points
+        and everything it acquires belongs to the point. Filing that under obj_<overview uuid>
+        names a directory after something that does not exist, so the id is left out of the result
+        path entirely and the point name plus the experiment tell the files apart.
+
+        The temporary measurement files are deliberately not affected. They keep the real id,
+        because that is what the analysis side writes and reads them back by.
+
+        :param str obj_id: the id of the object, or of the overview when there is none
+        :return: the id to build the result path from, or None to leave it out
+        """
+        return obj_id if self.per_object_results else None
 
     def get_overview_points(self):
         """
@@ -198,7 +220,8 @@ class AcquisitionPipeline:
         """
         log('Initialized reanalysis of object {}'.format(obj_id))
 
-        file_name = self.path_manager.result_path(obj_id, '_exp', self.object_visualization_experiment, name)
+        file_name = self.path_manager.result_path(self._result_id(obj_id), '_exp',
+                                                  self.object_visualization_experiment, name)
         saving_path = self.path_manager.temp_file_path(obj_id, 'xy', name)
 
         # The type has to be reanalysis_xy, not overview: it is what makes the analysis
@@ -234,7 +257,7 @@ class AcquisitionPipeline:
 
         self._run_experiment(obj_id, z_exp, stage="_reanalysis_z", name=name, obj=obj)
 
-        file_name = self.path_manager.result_path(obj_id, "_reanalysis_z", z_exp, name)
+        file_name = self.path_manager.result_path(self._result_id(obj_id), "_reanalysis_z", z_exp, name)
         saving_path = self.path_manager.temp_file_path(obj_id, 'z', name)
 
         args_z = {'type': 'reanalysis_z', 'file_path': file_name, 'saving_path': saving_path,
@@ -265,7 +288,7 @@ class AcquisitionPipeline:
         if adaptive is not None:
             log('Doing adaptive experiment {} on {}'.format(adaptive.__name__, exp_item))
 
-            adaptive(exp_item, obj_id, stage, obj, name)
+            adaptive(exp_item, self._result_id(obj_id), stage, obj, name)
 
             log('Rewrote experiment {} with {}'.format(exp_item, adaptive.__name__))
 
@@ -275,11 +298,12 @@ class AcquisitionPipeline:
         # Different approaches for saving for .fcs files (which gives None) and .czi files
         if self.zeiss_api.active_document() is None:
 
-            file_name = self.path_manager.result_dir(obj_id, stage, name)
-            base_name = Path.GetFileNameWithoutExtension(self.path_manager.result_path(obj_id, stage, exp_item, name))
+            file_name = self.path_manager.result_dir(self._result_id(obj_id), stage, name)
+            base_name = Path.GetFileNameWithoutExtension(
+                self.path_manager.result_path(self._result_id(obj_id), stage, exp_item, name))
 
         else:
-            file_name = self.path_manager.result_path(obj_id, stage, exp_item, name)
+            file_name = self.path_manager.result_path(self._result_id(obj_id), stage, exp_item, name)
             base_name = None
 
         self.zeiss_api.save_experiment_result(file_name, base_name)

@@ -373,11 +373,15 @@ if setup['finding_objects']:
         pipeline.capture_objects(name=None)
 
 else:
+    # There is no object in this branch, only the overview points, so the results are not filed
+    # under an obj_ folder: A1/A1_experiment_post.czi rather than the obj_uuid folder and uuid in
+    # the file name it used to get, which named a directory after an object that was never found.
     pipeline = AcquisitionPipeline(CONFIG, ZEISS_API,
         reanalysis_dict={'z': {'z_experiment': setup['z_experiment'],
                                'z_analysis': setup['z_analysis'],
                                'is_FCS': setup['is_FCS']}},
         adaptive_experiments=setup['adaptive_experiments'],
+        per_object_results=False,
     )
     if setup['multiple_overviews']:
 
