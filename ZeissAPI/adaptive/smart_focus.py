@@ -8,6 +8,10 @@
 # own name, exactly the way @register_class works for analysers and object selections.
 #
 # The signature is fixed, because _run_experiment calls it: (exp_item, obj_id, stage, obj, name).
+# obj_id is the id the RESULT PATH is built from, not always the id of the measured thing: with
+# object finding switched off it is None, because the results are then filed under the overview
+# point instead of under an obj_ folder. Passing it to PathManager.result_dir is what keeps a
+# plugin's own files in the same folder as the .czi the experiment produced.
 # A linter will complain about undefined names in this file. That is expected.
 
 

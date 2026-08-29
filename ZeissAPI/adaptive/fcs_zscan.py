@@ -17,6 +17,10 @@
 # it would still be the macro that breaks, not this file.
 #
 # The signature is fixed, because _run_experiment calls it: (exp_item, obj_id, stage, obj, name).
+# obj_id is the id the RESULT PATH is built from, not always the id of the measured thing: with
+# object finding switched off it is None, because the results are then filed under the overview
+# point instead of under an obj_ folder. Passing it to PathManager.result_dir is what keeps a
+# plugin's own files in the same folder as the .czi the experiment produced.
 # obj is the record of the object the experiment is about to run on, or None when the run has object
 # finding switched off and the pipeline is simply visiting overview points. A plugin has to cope with
 # both, because the same function is used in both modes.
