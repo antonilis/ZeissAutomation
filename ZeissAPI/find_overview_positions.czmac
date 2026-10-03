@@ -27,7 +27,7 @@ CONFIG = RuntimeConfig()
 # Zen, ZenWindow and ZenSpecialFolder exist in a macro's namespace and nowhere else - not in an
 # imported module's globals, not in builtins, and there is no __main__ to reach through. They are
 # collected here and handed down, exactly the way CONFIG is.
-ZEISS_API = ZenApi(Zen, ZenWindow, ZenSpecialFolder, CONFIG)
+ZEISS_API = ZenApi(Zen, ZenWindow, ZenSpecialFolder, ZenPixelType, CONFIG)
 
 
 ############################ GUI generation ##############################################################################

@@ -1,42 +1,137 @@
+import json
+import time
+
+from System.IO import Path
+
+from zen_lib.runtime_config import log
+from zen_lib.adaptive_loader import register_adaptive
+
+
 ###################### adaptive experiment plugin #####################################################
-# This file is NOT imported. main_macro reads it and runs it in its own namespace, so that Zen,
-# ZenWindow, ZEISS_API, PathManager, CONFIG, log, json, time, uuid and the System.IO names
-# are already defined here and must not be imported. That is the whole point: an adaptive experiment
-# needs the names ZEN injects into the macro, and a normally imported module cannot see them.
+# An ordinary module, imported by zen_lib.adaptive_loader; see fcs_zscan.py for what the AdaptiveContext
+# holds. Everything that touches the microscope goes through ctx.zen_api.
 #
-# Whatever is decorated with @register_adaptive appears in the macro's dropdown under the function's
-# own name, exactly the way @register_class works for analysers and object selections.
+# Chosen from the dropdown the function always runs the plain wide autofocus. use_surface is an extra
+# keyword that only other plugins pass - smart_SLB_imaging imports this module and calls it directly.
+
+
+###################### what it does ####################################################################
+# use_surface=False (the dropdown, and the default):
+#   the software autofocus with the autofocus settings of the experiment itself - for SLB_A655_imaging
+#   a relative range of 200 um.
 #
-# The signature is fixed, because _run_experiment calls it: (exp_item, obj_id, stage, obj, name).
-# obj_id is the id the RESULT PATH is built from, not always the id of the measured thing: with
-# object finding switched off it is None, because the results are then filed under the overview
-# point instead of under an obj_ folder. Passing it to PathManager.result_dir is what keeps a
-# plugin's own files in the same folder as the .czi the experiment produced.
-# A linter will complain about undefined names in this file. That is expected.
+# use_surface=True (smart_SLB_imaging):
+#   1. Definite Focus finds the cover-slip surface         zen_api.find_surface()
+#   2. move to surface + the offset of the objective       the SLB sits 6.5 um below it at 40x
+#   3. narrow software autofocus around that point         with SMART_FOCUS_NARROW_EXPERIMENT
+#   and falls back to the wide autofocus of use_surface=False when there is no offset for the
+#   objective, when FindSurface or the narrow autofocus raises, or when the narrow autofocus ends up
+#   more than SMART_FOCUS_MAX_CORRECTION from the target - at the edge of its window, which means the
+#   bilayer is probably outside it.
+#
+# Measured on the instrument (probe_smart_SLB_imaging.czmac and _2, 40x): FindSurface takes ~5 s and
+# repeats to 0.01-0.09 um; the software autofocus settled 6.62 and 6.47 um below the surface it found.
+# At 20x (FRAP run of 02.10) the bilayer sat 16.65 +- 0.08 um below it, and the narrow path worked in
+# 27 of 27 points.
+#
+# The narrow window comes from a separate experiment rather than from rewriting the autofocus range of
+# the experiment: that experiment is only used to focus and is never acquired or saved. It runs before
+# smart_SLB_imaging touches the laser power of the imaging experiment, so switching to it and back
+# cannot undo that change.
+#
+# smart_focus.json next to the results of every well records what happened, for the notebook.
+
+
+###################### settings ########################################################################
+
+SMART_FOCUS_NARROW_EXPERIMENT = "SLB_A655_AF_narrow"   # a copy of the imaging experiment, AF range 10 um
+
+# um from the Definite Focus surface to the bilayer, per objective magnification. An objective that is
+# not listed gets the wide autofocus, because an offset from another objective would be wrong.
+SMART_FOCUS_SURFACE_OFFSETS = {40: -6.5, 20: -17}
+
+SMART_FOCUS_MAX_CORRECTION = 4.0    # um - a narrow autofocus that moves further than this falls back to wide
+
+
+###################### helpers ########################################################################
+
+
+def _smart_focus_surface_then_narrow(zen_api, record):
+    """
+    Definite Focus, the objective's offset, then the narrow autofocus. Everything measured on the way
+    goes into record.
+    :return: the reason to fall back to the wide autofocus, or None when this succeeded
+    """
+    magnification = zen_api.objective_magnification()
+    record["objective_magnification"] = magnification
+
+    if magnification not in SMART_FOCUS_SURFACE_OFFSETS:
+        return "no surface offset for a {}x objective".format(magnification)
+
+    offset = SMART_FOCUS_SURFACE_OFFSETS[magnification]
+
+    started = time.time()
+    try:
+        record["z_surface"] = zen_api.find_surface()
+    except Exception as error:
+        return "FindSurface failed: {}".format(error)
+
+    record["surface_seconds"] = time.time() - started
+
+    target = record["z_surface"] + offset
+    record["z_target"] = target
+    zen_api.move_focus(target)
+
+    started = time.time()
+    try:
+        record["z_narrow"] = zen_api.autofocus(SMART_FOCUS_NARROW_EXPERIMENT)
+    except Exception as error:
+        return "narrow autofocus with {} failed: {}".format(SMART_FOCUS_NARROW_EXPERIMENT, error)
+
+    record["narrow_seconds"] = time.time() - started
+    record["narrow_correction"] = record["z_narrow"] - target
+
+    if abs(record["narrow_correction"]) > SMART_FOCUS_MAX_CORRECTION:
+        return "narrow autofocus moved {:+.2f} um from the target".format(record["narrow_correction"])
+
+    return None
+
+
+###################### the adaptive experiment ########################################################
 
 
 @register_adaptive
-def smart_focus(exp_item, obj_id, stage, obj, name):
+def smart_focus(ctx, use_surface=False):
     """
-    Example of the function suited for adaptive experiments.
+    Focuses before the experiment runs: either with its own (wide) autofocus, or, with use_surface,
+    with Definite Focus and a narrow autofocus, falling back to the wide one when that fails.
     """
-    
-    log('Jest w pyte')
-    
-    exp_obj = Zen.Acquisition.Experiments.GetByName(exp_item)
+    zen_api = ctx.zen_api
+    experiment = ctx.experiment
 
-    exp_obj.SetActive()
+    record = {"experiment": experiment, "use_surface": use_surface, "z_start": zen_api.focus_z()}
+    fallback = None
 
-    Zen.Acquisition.FindAutofocus(Zen.Acquisition.Experiments.ActiveExperiment, timeoutSeconds=0)
-  
-    
-    actual_position = ZEISS_API.get_stage_focus_position()
+    if use_surface:
+        fallback = _smart_focus_surface_then_narrow(zen_api, record)
 
-    exp_obj.ClearTileRegionsAndPositions(0)
+        if fallback:
+            log("smart_focus: falling back to the wide autofocus - {}".format(fallback))
 
-    z_offset = [actual_position[2] + i for i in range(-10, 11)]
+    if not use_surface or fallback:
+        started = time.time()
+        record["z_wide"] = zen_api.autofocus(experiment)
+        record["wide_seconds"] = time.time() - started
 
-    for z_position in z_offset:
-        exp_obj.AddSinglePosition(blockIndex=0, x=actual_position[0], y=actual_position[1], z=z_position)
+    # Leave the experiment that is about to run active, whichever one was used to focus
+    zen_api.activate_experiment(experiment)
 
-    exp_obj.SetActive()
+    record["mode"] = "surface + narrow" if use_surface and not fallback else "wide"
+    record["fallback_reason"] = fallback
+    record["z_final"] = zen_api.focus_z()
+
+    log("smart_focus: {} autofocus for {}, z {:.3f} -> {:.3f}".format(
+        record["mode"], experiment, record["z_start"], record["z_final"]))
+
+    with open(Path.Combine(ctx.result_dir(), "smart_focus.json"), "w") as record_file:
+        json.dump(record, record_file, indent=2)

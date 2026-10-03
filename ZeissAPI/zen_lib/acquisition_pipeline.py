@@ -5,6 +5,7 @@ from System.IO import Path, File
 from zen_lib.runtime_config import log, read_json
 from zen_lib.path_manager_main_macro import PathManager
 from zen_lib.execute_python import PythonAnalysisRunner
+from zen_lib.adaptive_loader import AdaptiveContext
 
 
 # ==============================================================================
@@ -288,7 +289,8 @@ class AcquisitionPipeline:
         if adaptive is not None:
             log('Doing adaptive experiment {} on {}'.format(adaptive.__name__, exp_item))
 
-            adaptive(exp_item, self._result_id(obj_id), stage, obj, name)
+            adaptive(AdaptiveContext(self.zeiss_api, exp_item, self._result_id(obj_id), stage, obj, name,
+                                     self.path_manager))
 
             log('Rewrote experiment {} with {}'.format(exp_item, adaptive.__name__))
 

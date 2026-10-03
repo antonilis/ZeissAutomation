@@ -7,28 +7,18 @@
 import sys
 from System.IO import File
 
-# json, time, uuid, Directory and Path are not used by this macro. They are here because the
-# adaptive plugins are run in THIS namespace and have always been able to count on them: fcs_zscan
-# builds a PathManager and writes its FCS_points.json with json and Path. Dropping an import here
-# silently breaks a plugin at the moment it runs, halfway through an acquisition, so the
-# plugin-visible surface is kept whole.
-import json
-import time
-import uuid
-from System.IO import Directory, Path
-
 # ZEN keeps its Python engine alive between macro runs, so a module imported once stays in
 # sys.modules and an edited file in zen_lib goes unnoticed until ZEN itself is restarted.
 # Dropping the package here costs milliseconds and makes what runs always be what is on disk,
 # which is also what stops a half finished copy of the folder from looking like it worked.
+# The adaptive plugins are dropped the same way, by load_adaptive_functions.
 #
-# Every zen_lib import has to come AFTER this loop, PathManager included: a name bound before it
-# would keep pointing at the class from the previous run while everything else was re-read.
+# Every zen_lib import has to come AFTER this loop: a name bound before it would keep pointing at
+# the class from the previous run while everything else was re-read.
 for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
     del sys.modules[_cached]
 
 from zen_lib.runtime_config import RuntimeConfig, log
-from zen_lib.path_manager_main_macro import PathManager
 from zen_lib.zen_api import ZenApi
 from zen_lib.zen_gui import list_experiments, show_or_exit, show_problems
 from zen_lib.adaptive_loader import load_adaptive_functions
@@ -47,13 +37,12 @@ CONFIG = RuntimeConfig()
 # found them absent from a module's globals, absent from builtins, and there is no __main__ to
 # reach through. So they are collected here and handed down the same way CONFIG is. Nothing in
 # zen_lib reaches for a global that only exists inside a macro.
-ZEISS_API = ZenApi(Zen, ZenWindow, ZenSpecialFolder, CONFIG)
+ZEISS_API = ZenApi(Zen, ZenWindow, ZenSpecialFolder, ZenPixelType, CONFIG)
 
-# The adaptive experiment plugins are read from their files and run in THIS namespace, which is why
-# the loader is given globals(): a plugin needs Zen and ZEISS_API, and running it anywhere else
-# would put it somewhere those names have never been. The loader also puts @register_adaptive here
-# before the plugins run, so a plugin file needs nothing but the decorator.
-ADAPTIVE_FUNCTIONS = load_adaptive_functions(CONFIG, globals())
+# The adaptive experiment plugins are ordinary modules in the adaptive/ package. They touch the
+# microscope only through the ZenApi the pipeline hands them, so they need nothing from this
+# namespace and are simply imported.
+ADAPTIVE_FUNCTIONS = load_adaptive_functions(CONFIG)
 
 
 ################################## Reading and checking the GUI selections #######################################
