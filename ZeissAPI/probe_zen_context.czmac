@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### what can an imported module see ################################################
+# A plugin in adaptive/ is not imported: main_macro reads it and runs it in the macro's own
+# namespace, so it never had a namespace of its own and Zen was there before it arrived. That
+# says nothing about a module in zen_lib, which IS imported and therefore starts with an almost
+# empty namespace of its own.
+#
+# This macro imports zen_lib._probe_context the ordinary way and asks it what it can see. It
+# only reads: GetByName, dir, hasattr, getattr and a listing of the Experiment Setups folder.
+# Nothing is moved, activated, executed or saved, apart from the report going into the log.
+
+import sys
+from System.IO import Directory, Path
+
+# Same reason as in the macros: ZEN keeps its Python engine alive between runs, so an edited
+# probe would otherwise keep reporting the results of its previous version.
+for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
+    del sys.modules[_cached]
+
+from zen_lib.runtime_config import log
+from zen_lib import _probe_context
+
+
+###################### choosing an experiment to look at ##############################################
+# Any saved experiment will do. It is loaded by name and never activated, because the only thing
+# being counted is how many members it appears to have.
+
+docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
+expfiles = Directory.GetFiles(Path.Combine(docfolder, 'Experiment Setups'), '*.czexp')
+experiments = [Path.GetFileNameWithoutExtension(item) for item in expfiles]
+
+window = ZenWindow()
+window.Initialize("Zen context probe")
+window.AddDropDown("exp_name", "Experiment to look at (nothing is run):", experiments, 0)
+
+result = window.Show()
+
+if result.HasCanceled:
+    raise SystemExit
+
+EXP_NAME = result.GetValue("exp_name")
+
+
+###################### the probe itself ###############################################################
+# Zen is handed over explicitly as well, so that the fallback of passing it in is measured in the
+# same run as the attempts to find it without help.
+
+REPORT = _probe_context.report(zen_from_macro=Zen, experiment_name=EXP_NAME)
+
+
+###################### the same count, taken here in the macro ########################################
+# The macro is compiled by ZEN, which imports the extension method namespace for it. This is the
+# number the module's count has to be compared against.
+
+REPORT.append("")
+REPORT.append("=== C. the same experiment, seen from the macro itself ===")
+
+exp_in_macro = Zen.Acquisition.Experiments.GetByName(EXP_NAME)
+macro_members = dir(exp_in_macro)
+
+REPORT.append("    len(dir(exp)) is {}".format(len(macro_members)))
+
+for _target in _probe_context.EXTENSION_TARGETS:
+    REPORT.append("        {} present: {}".format(_target, _target in macro_members))
+
+# The counts differ by one, and a count does not say by which member. Both directions are asked
+# for, because a member the module has and the macro does not would be just as surprising.
+module_members = _probe_context.experiment_members(Zen, EXP_NAME)
+
+REPORT.append("    only in the macro  : {}".format(sorted(set(macro_members) - set(module_members))))
+REPORT.append("    only in the module : {}".format(sorted(set(module_members) - set(macro_members))))
+
+
+###################### showing and recording it #######################################################
+
+REPORT_TEXT = "\n".join(REPORT)
+
+log("--- zen context probe ---")
+log(REPORT_TEXT)
+
+output = ZenWindow()
+output.Initialize("Zen context probe")
+output.AddMultiLineTextBox("report", "Also written to the log:", REPORT_TEXT)
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>80</Row>
+  <Column>12</Column>
+</Script>

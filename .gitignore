@@ -1,0 +1,69 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# ---- Virtual environments ----
+venv/
+.venv/
+env/
+ENV/
+
+# ---- IDE / editor ----
+.idea/
+.vscode/
+*.swp
+*~
+
+# ---- Microscope data ----
+# Raw acquisitions are large and are reproducible only by re-running the
+# microscope. They never belong in version control, wherever they end up.
+*.czi
+*.raw
+*.fcs
+*.lsm
+*.pkl
+
+# ---- Pipeline directories ----
+# These three must EXIST for a run to work (nothing creates them), so they are
+# kept in the repo via .gitkeep, but everything the pipeline writes into them is
+# per-run output and is ignored.
+
+# Overview images acquired for analysis
+image_for_analysis/*
+!image_for_analysis/.gitkeep
+
+# Per-object result folders (obj_<uuid>/) with .czi, .fcs, .raw, FCS_points.json
+results/*
+!results/.gitkeep
+
+# Measurement JSONs + their .png overlays, written by main_processor.py.
+# points_for_overview.json is the exception: it is pipeline *input*, generated
+# once per plate by find_overview_positions.czmac and reused across runs, and it
+# is the only committed example of that file's format.
+temp/*
+!temp/.gitkeep
+!temp/points_for_overview.json
+
+# Written by result_processing/results_analyzer.py
+founded_points/
+
+# ---- Logs ----
+zen_log.txt
+*.log
+
+# ---- Model caches ----
+.cellpose/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Claude Code ----
+.claude/settings.local.json

@@ -1,0 +1,390 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### what this probe answers #########################################################
+# How to place a bleach ROI from a macro, so that a FRAP experiment bleaches where the analysis wants:
+#
+#   1. which experiment-region calls exist on a ZenExperiment, and their signatures
+#   2. whether AddEllipseExperimentRegion(..., forBleaching=True) actually bleaches
+#   3. in which units it reads centerX / centerY / radius: image pixels, um from the image's top-left
+#      corner, or absolute stage um
+#   4. whether the spot lands where it was aimed - which also shows whether image x/y and stage x/y
+#      agree (a swap or a flipped axis moves the spot to a predictable wrong place)
+#
+# One field per interpretation of the units. For each: a reference frame with the imaging experiment,
+# one ellipse added to the (cleared) FRAP experiment, the FRAP run, both images and a JSON record saved.
+# The stage steps FIELD_STEP_UM in +x between fields so that no field is bleached twice, and goes back
+# to where it started at the end. The focus is not touched.
+#
+# The spot is aimed at TARGET_FRACTION of the field - deliberately not symmetric, so a swapped or
+# flipped axis is visible. The macro locates it itself (the block that drops most against frame 1),
+# and the saved .czi allow the same analysis offline if that part fails.
+#
+# The FRAP experiment's regions and positions are replaced IN MEMORY. Do not save it afterwards -
+# reload it in ZEN to get its own region back.
+
+import sys
+import time
+import json
+
+import clr
+from System.IO import Path, Directory
+
+for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
+    del sys.modules[_cached]
+
+from zen_lib.runtime_config import RuntimeConfig, log
+
+
+###################### settings ########################################################################
+
+IMAGING_EXPERIMENT = "SLB_A655_imaging"
+FRAP_EXPERIMENT = "SLB_A655_FRAP"       # time series with bleaching set up in ZEN; its regions are replaced
+
+# Run 1 settled the units: centerX / centerY / radius are PIXELS of the image passed in, and ZEN stores
+# the region at left_top + pixels * scaling in stage um. It also showed that the FRAP frame is only a
+# ~21 um crop centred on the stage position, so the spot is now aimed relative to that centre.
+TARGET_OFFSET_UM = (-5.0, 2.5)          # from the stage position = centre of the FRAP frame (x, y)
+FRAP_FIELD_UM = 21.2                    # width of the FRAP frame measured in run 1 (163 px x 0.130 um)
+TARGET_FRACTION = (0.5 + TARGET_OFFSET_UM[0] / FRAP_FIELD_UM, 0.5 + TARGET_OFFSET_UM[1] / FRAP_FIELD_UM)
+RADIUS_UM = 1.5
+FIELD_STEP_UM = 200.0                   # stage step in +x between fields
+
+INTERPRETATIONS = ["pixels", "pixels"]  # two fields, the same (confirmed) units - a repeat
+
+BLOCK = 8                               # px - block size for locating the spot
+MAX_FRAMES = 10                         # frames after the first that are searched for the drop
+MATCH_TOLERANCE = 0.08                  # fraction of the field within which the spot counts as on target
+
+
+###################### reporting #######################################################################
+
+REPORT = []
+RECORDS = []
+
+
+def report(text):
+    REPORT.append(text)
+    log(text)
+
+
+def public(obj):
+    return [name for name in dir(obj) if not name.startswith("_")]
+
+
+def as_xy(point):
+    """
+    X and Y of whatever GetStageTopLeftOfImage returns, or None when it has no X / Y.
+    """
+    try:
+        return [float(point.X), float(point.Y)]
+    except Exception:
+        return None
+
+
+###################### 1. signatures ###################################################################
+
+
+def report_signatures(experiment):
+    keys = ("Region", "Bleach", "Marker", "Frap", "FRAP", "StageTopLeft")
+    names = [name for name in public(experiment) if any(key in name for key in keys)]
+    report("Region / bleach members of ZenExperiment: {}".format(names))
+
+    for name in names:
+        try:
+            report("--- {} ---\n{}".format(name, getattr(experiment, name).__doc__))
+        except Exception as error:
+            report("--- {} --- no __doc__: {}".format(name, error))
+
+
+def report_region_getters(experiment, label):
+    """
+    Calls every Get...Region... member with blockIndex 0 - they only read - and prints what comes back.
+    """
+    for name in public(experiment):
+        if not (name.startswith("Get") and "Region" in name):
+            continue
+
+        try:
+            value = getattr(experiment, name)(0)
+            items = list(value) if hasattr(value, "__iter__") else [value]
+            report("{}: {}(0) -&gt; {} item(s)".format(label, name, len(items)))
+
+            for item in items:
+                report("    {} | {}".format(item, [(member, str(getattr(item, member, "?")))
+                                                   for member in public(item)
+                                                   if not callable(getattr(item, member, None))]))
+
+        except Exception as error:
+            report("{}: {}(0) FAILED - {}".format(label, name, error))
+
+
+def make_color():
+    """
+    The experiment-region calls want a System.Windows.Media.Color, not a ZenColor.
+    """
+    try:
+        clr.AddReference("PresentationCore")
+        from System.Windows.Media import Colors
+        return Colors.Red
+
+    except Exception as error:
+        report("System.Windows.Media.Colors not available - {}".format(error))
+        return None
+
+
+###################### 2. placing the region ##########################################################
+
+
+def region_arguments(interpretation, reference, left_top_xy):
+    """
+    centerX, centerY, radiusX, radiusY in pixels of the reference image, aimed TARGET_OFFSET_UM from the
+    stage position - the inverse of what ZEN does with them (left_top + pixels * scaling).
+    """
+    target_x = Zen.Devices.Stage.ActualPositionX + TARGET_OFFSET_UM[0]
+    target_y = Zen.Devices.Stage.ActualPositionY + TARGET_OFFSET_UM[1]
+
+    return ((target_x - left_top_xy[0]) / reference.Scaling.X, (target_y - left_top_xy[1]) / reference.Scaling.Y,
+            RADIUS_UM / reference.Scaling.X, RADIUS_UM / reference.Scaling.Y)
+
+
+def add_region(experiment, reference, left_top, arguments, color, record):
+    cx, cy, rx, ry = arguments
+
+    try:
+        experiment.AddEllipseExperimentRegion(reference.Scaling, left_top, 0, cx, cy, rx, ry, color,
+                                              False, True, False)
+        record["region_call"] = "AddEllipseExperimentRegion"
+        report("AddEllipseExperimentRegion({:.2f}, {:.2f}, r {:.2f} x {:.2f}) OK".format(cx, cy, rx, ry))
+        return True
+
+    except Exception as error:
+        report("AddEllipseExperimentRegion FAILED - {}".format(error))
+
+    # Fallback: the same place as a square, in case only the ellipse overload is the problem
+    try:
+        experiment.AddRectangleExperimentRegion(reference.Scaling, left_top, 0, cx, cy, 2 * rx, 2 * ry,
+                                                color, False, True, False)
+        record["region_call"] = "AddRectangleExperimentRegion"
+        report("AddRectangleExperimentRegion({:.2f}, {:.2f}, {:.2f} x {:.2f}) OK".format(
+            cx, cy, 2 * rx, 2 * ry))
+        return True
+
+    except Exception as error:
+        report("AddRectangleExperimentRegion FAILED - {}".format(error))
+
+    return False
+
+
+###################### 3. locating the spot ###########################################################
+
+
+def frame_counts(image, t):
+    """
+    Raw Gray16 bytes of one frame. CreateSubImage indices are 1-based, like "C(1)|Z(3)" in the docs.
+    """
+    subset = "T({})".format(t)
+    if image.Bounds.SizeC &gt; 1:
+        subset = "C(1)|" + subset
+
+    frame = image.CreateSubImage(subset)
+    try:
+        return frame.CopyPixelsToArray(ZenPixelType.Gray16), frame.Bounds.SizeX, frame.Bounds.SizeY
+    finally:
+        frame.Close()
+
+
+def block_means(data, width, height):
+    columns, rows = width // BLOCK, height // BLOCK
+    sums = [0.0] * (columns * rows)
+
+    # Every second pixel in both directions
+    for row in xrange(0, rows * BLOCK, 2):
+        base = row * width
+        block_row = (row // BLOCK) * columns
+
+        for column in xrange(0, columns * BLOCK, 2):
+            i = 2 * (base + column)
+            sums[block_row + column // BLOCK] += data[i] + 256 * data[i + 1]
+
+    per_block = (BLOCK // 2) ** 2
+    return [total / per_block for total in sums], columns
+
+
+def locate_spot(image):
+    """
+    The block whose intensity drops most, relative to frame 1, in any of the next MAX_FRAMES frames.
+    :return: dict with the spot centre in pixels and as a fraction of the field, or None
+    """
+    frames = image.Bounds.SizeT
+    report("FRAP image: {} x {} px, {} frame(s), {} channel(s)".format(
+        image.Bounds.SizeX, image.Bounds.SizeY, frames, image.Bounds.SizeC))
+
+    if frames &lt; 2:
+        report("Only one frame - the spot cannot be located in the macro, see the saved .czi")
+        return None
+
+    data, width, height = frame_counts(image, 1)
+    first, columns = block_means(data, width, height)
+
+    best = None
+    for t in range(2, min(frames, MAX_FRAMES + 1) + 1):
+        data, width, height = frame_counts(image, t)
+        means, _ = block_means(data, width, height)
+
+        drops = [(first[k] - means[k]) / max(first[k], 1.0) for k in range(len(first))]
+        k = max(range(len(drops)), key=lambda index: drops[index])
+
+        typical = sorted(drops)[len(drops) // 2]
+        if best is None or drops[k] &gt; best["drop"]:
+            best = {"frame": t, "drop": drops[k], "median_drop": typical, "block": k}
+
+    x = (best["block"] % columns + 0.5) * BLOCK
+    y = (best["block"] // columns + 0.5) * BLOCK
+
+    best.update({"x_px": x, "y_px": y, "fx": x / width, "fy": y / height})
+    report("Strongest drop: frame {frame}, {drop:.0%} (median of all blocks {median_drop:.0%}) at "
+           "({x_px:.0f}, {y_px:.0f}) px = ({fx:.2f}, {fy:.2f}) of the field".format(**best))
+    return best
+
+
+def orientation(spot):
+    """
+    Which reading of the axes puts TARGET_FRACTION where the spot actually is.
+    """
+    tx, ty = TARGET_FRACTION
+    candidates = {
+        "as aimed": (tx, ty),
+        "x and y swapped": (ty, tx),
+        "y flipped": (tx, 1 - ty),
+        "x flipped": (1 - tx, ty),
+        "both flipped": (1 - tx, 1 - ty),
+    }
+
+    distances = dict((name, ((spot["fx"] - x) ** 2 + (spot["fy"] - y) ** 2) ** 0.5)
+                     for name, (x, y) in candidates.items())
+    name = min(distances, key=lambda key: distances[key])
+
+    return name, distances[name]
+
+
+###################### one field #######################################################################
+
+
+def run_field(index, interpretation, imaging, frap, color, folder):
+    record = {"field": index, "interpretation": interpretation,
+              "stage": [Zen.Devices.Stage.ActualPositionX, Zen.Devices.Stage.ActualPositionY,
+                        Zen.Devices.Focus.ActualPosition]}
+    RECORDS.append(record)
+    report("=== field {}: {} at stage {} ===".format(index, interpretation, record["stage"]))
+
+    reference = Zen.Acquisition.AcquireImage(imaging)
+    reference.Save(Path.Combine(folder, "field{}_{}_reference.czi".format(index, interpretation)))
+
+    record["reference"] = {"size": [reference.Bounds.SizeX, reference.Bounds.SizeY],
+                           "scaling_um": [reference.Scaling.X, reference.Scaling.Y]}
+
+    left_top = frap.GetStageTopLeftOfImage(reference.Scaling, reference)
+    record["reference"]["left_top"] = as_xy(left_top)
+    report("GetStageTopLeftOfImage -&gt; {} ({}) = {}".format(left_top, type(left_top).__name__, as_xy(left_top)))
+
+    frap.ClearExperimentRegionsAndPositions(0)
+    report_region_getters(frap, "after clearing")
+
+    arguments = region_arguments(interpretation, reference, as_xy(left_top))
+    record["region_arguments"] = list(arguments)
+
+    if not add_region(frap, reference, left_top, arguments, color, record):
+        reference.Close()
+        return
+
+    report_region_getters(frap, "after adding")
+
+    frap.SetActive()
+    started = time.time()
+    result = Zen.Acquisition.Execute(frap)
+    record["frap_seconds"] = time.time() - started
+
+    if result is None:
+        result = Zen.Application.Documents.ActiveDocument
+
+    result.Save(Path.Combine(folder, "field{}_{}_frap.czi".format(index, interpretation)))
+    report("FRAP run took {:.1f} s, saved".format(record["frap_seconds"]))
+
+    record["frap"] = {"size": [result.Bounds.SizeX, result.Bounds.SizeY],
+                      "scaling_um": [result.Scaling.X, result.Scaling.Y],
+                      "left_top": as_xy(frap.GetStageTopLeftOfImage(result.Scaling, result))}
+
+    spot = locate_spot(result)
+    record["spot"] = spot
+
+    if spot is not None:
+        name, distance = orientation(spot)
+        record["orientation"] = name
+        record["match"] = spot["drop"] &gt; 0.2 and distance &lt; MATCH_TOLERANCE
+        report("Closest reading of the axes: {} (off by {:.2f} of the field)".format(name, distance))
+
+    reference.Close()
+
+
+###################### run ############################################################################
+
+CONFIG = RuntimeConfig()
+
+folder = Path.Combine(CONFIG.results, "FRAP_probe_{}".format(time.strftime("%Y%m%d_%H%M%S")))
+Directory.CreateDirectory(folder)
+
+report("--- FRAP ROI probe --- results in {}".format(folder))
+
+imaging = Zen.Acquisition.Experiments.GetByName(IMAGING_EXPERIMENT)
+frap = Zen.Acquisition.Experiments.GetByName(FRAP_EXPERIMENT)
+
+report_signatures(frap)
+report_region_getters(frap, "as loaded from {}".format(FRAP_EXPERIMENT))
+
+color = make_color()
+
+start_x, start_y = Zen.Devices.Stage.ActualPositionX, Zen.Devices.Stage.ActualPositionY
+
+try:
+    if color is None:
+        report("RESULT: no Color - region calls not tried")
+    else:
+        for index, interpretation in enumerate(INTERPRETATIONS):
+            Zen.Devices.Stage.MoveTo(start_x + index * FIELD_STEP_UM, start_y)
+            time.sleep(1)
+
+            # One field must not stop the others
+            try:
+                run_field(index + 1, interpretation, imaging, frap, color, folder)
+            except Exception as error:
+                report("field {} ({}) FAILED - {}".format(index + 1, interpretation, error))
+
+finally:
+    Zen.Devices.Stage.MoveTo(start_x, start_y)
+    report("Stage back at ({:.1f}, {:.1f})".format(start_x, start_y))
+
+    with open(Path.Combine(folder, "frap_probe.json"), "w") as record_file:
+        json.dump(RECORDS, record_file, indent=2, default=str)
+
+for record in RECORDS:
+    report("RESULT: {interpretation}: call {call}, spot {spot}, axes {axes}, MATCH = {match}".format(
+        interpretation=record["interpretation"], call=record.get("region_call", "none"),
+        spot="not found" if not record.get("spot") else "{:.0%} drop at ({:.2f}, {:.2f})".format(
+            record["spot"]["drop"], record["spot"]["fx"], record["spot"]["fy"]),
+        axes=record.get("orientation", "-"), match=record.get("match", False)))
+
+output = ZenWindow()
+output.Initialize("FRAP ROI probe")
+output.AddMultiLineTextBox("report", "Also written to the log and to {}:".format(folder), "\n".join(REPORT))
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>1</Row>
+  <Column>1</Column>
+</Script>

@@ -1,0 +1,393 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### ZEN scripting API dump #########################################
+# Produces a reference of everything the ZEN macro API offers, by reading .NET metadata.
+#
+# SAFETY: this macro never invokes anything. It does not call methods, and it does not
+# read properties either - reading a property would run its getter, and some getters talk
+# to hardware. It walks the TYPE graph through reflection, which only reads descriptions.
+# The stage does not move, no experiment is loaded, activated, executed or saved.
+#
+# It also settles the extension method question: an extension method is a static method in
+# a static class whose first parameter is the type it extends, which is visible in metadata.
+# They are listed per type, so if ClearExperimentRegionsAndPositions turns up there, that is
+# the confirmation, and the declaring namespace is what a plugin would have to import.
+
+import sys
+import clr
+
+from System import AppDomain
+from System.IO import Directory, Path, File
+from System.Reflection import BindingFlags
+
+INJECTED_BY_ZEN = sorted(dir())          # taken first, before this macro defines anything
+
+REPORT = []
+
+MAX_DEPTH = 6
+MAX_TYPES = 2000                          # a stop, so a surprise in the graph cannot run away
+INTERESTING = ("Zeiss", "Zen", "ZEN")
+
+INSTANCE_AND_STATIC = BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static
+
+
+def note(text):
+    REPORT.append(str(text))
+
+
+def full_name_of(clr_type):
+    try:
+        name = clr_type.FullName
+
+        if name is None:
+            name = clr_type.Name
+
+        return str(name)
+    except Exception:
+        return None
+
+
+def is_interesting(clr_type):
+    """
+    True for the types worth walking into. Without this the walk wanders off into the whole of
+    System and produces a reference nobody can read.
+    """
+    name = full_name_of(clr_type)
+
+    if name is None:
+        return False
+
+    for marker in INTERESTING:
+        if marker in name:
+            return True
+
+    return False
+
+
+def unwrap(clr_type):
+    """
+    A type mentioned in a signature can hide the interesting one inside it: List[ZenImage],
+    ZenImage[], and so on. Returns the type itself plus whatever it wraps.
+    """
+    found = [clr_type]
+
+    try:
+        if clr_type.IsArray:
+            found.append(clr_type.GetElementType())
+
+        if clr_type.IsGenericType:
+            for argument in clr_type.GetGenericArguments():
+                found.append(argument)
+    except Exception:
+        pass
+
+    return found
+
+
+def signature(method):
+    """
+    Builds a readable signature from metadata: return type, name and typed parameters.
+    """
+    try:
+        parameters = []
+
+        for parameter in method.GetParameters():
+            parameters.append(str(parameter.ParameterType.Name) + " " + str(parameter.Name))
+
+        return "{} {}({})".format(method.ReturnType.Name, method.Name, ", ".join(parameters))
+    except Exception as error:
+        return str(method) + "   (signature unavailable: " + str(error) + ")"
+
+
+###################### extension methods, collected once ##############################
+
+EXTENSIONS = {}
+SCANNED_ASSEMBLIES = []
+FAILED_ASSEMBLIES = []
+
+for assembly in AppDomain.CurrentDomain.GetAssemblies():
+    try:
+        types = assembly.GetTypes()
+        SCANNED_ASSEMBLIES.append(str(assembly.GetName().Name))
+    except Exception:
+        FAILED_ASSEMBLIES.append(str(assembly.GetName().Name))
+        continue
+
+    for clr_type in types:
+        try:
+            if not clr_type.IsAbstract or not clr_type.IsSealed:
+                continue                                  # a static class is abstract and sealed
+
+            methods = clr_type.GetMethods(BindingFlags.Public | BindingFlags.Static)
+        except Exception:
+            continue
+
+        for method in methods:
+            try:
+                parameters = method.GetParameters()
+
+                if not parameters:
+                    continue
+
+                extended = full_name_of(parameters[0].ParameterType)
+            except Exception:
+                continue
+
+            if extended is None:
+                continue
+
+            if extended not in EXTENSIONS:
+                EXTENSIONS[extended] = []
+
+            EXTENSIONS[extended].append((signature(method), str(clr_type.FullName),
+                                         str(clr_type.Namespace), str(assembly.GetName().Name)))
+
+
+###################### walking the type graph #########################################
+# Followed: property types, method return types, method parameter types, base types and
+# interfaces. Properties alone are not enough - ZenExperiment is only reachable as the
+# return type of GetByName, which is exactly the type this whole exercise is about.
+
+SEEN = {}
+ORDER = []
+CAPPED = [False]
+
+
+def visit(clr_type, depth):
+    name = full_name_of(clr_type)
+
+    if name is None or name in SEEN or depth &gt; MAX_DEPTH:
+        return
+
+    if len(ORDER) &gt;= MAX_TYPES:
+        CAPPED[0] = True
+        return
+
+    SEEN[name] = True
+    ORDER.append((name, clr_type, depth))
+
+    if depth == MAX_DEPTH:
+        return
+
+    followed = []
+
+    try:
+        for prop in clr_type.GetProperties(INSTANCE_AND_STATIC):
+            followed.extend(unwrap(prop.PropertyType))
+    except Exception:
+        pass
+
+    try:
+        for method in clr_type.GetMethods(INSTANCE_AND_STATIC):
+            followed.extend(unwrap(method.ReturnType))
+
+            for parameter in method.GetParameters():
+                followed.extend(unwrap(parameter.ParameterType))
+    except Exception:
+        pass
+
+    try:
+        for field in clr_type.GetFields(INSTANCE_AND_STATIC):
+            followed.extend(unwrap(field.FieldType))
+    except Exception:
+        pass
+
+    try:
+        if clr_type.BaseType is not None:
+            followed.append(clr_type.BaseType)
+
+        followed.extend(clr_type.GetInterfaces())
+    except Exception:
+        pass
+
+    for candidate in followed:
+        try:
+            if is_interesting(candidate):
+                visit(candidate, depth + 1)
+        except Exception:
+            continue
+
+
+try:
+    visit(clr.GetClrType(type(Zen)), 0)
+except Exception as error:
+    note("could not start from Zen: " + str(error))
+
+
+###################### the report #####################################################
+
+note("ZEN scripting API reference, generated from .NET metadata")
+note("=" * 78)
+note("")
+note("Names ZEN injects into the macro scope:")
+
+for name in INJECTED_BY_ZEN:
+    if not name.startswith("_"):
+        note("    " + name)
+
+note("")
+note("Depth limit                              : " + str(MAX_DEPTH))
+note("Assemblies scanned for extension methods : " + str(len(SCANNED_ASSEMBLIES)))
+note("Assemblies that could not be read        : " + str(FAILED_ASSEMBLIES))
+note("Types described                          : " + str(len(ORDER)))
+note("Type limit hit                           : " + str(CAPPED[0]))
+note("")
+note("--- index ---")
+
+for name, clr_type, depth in sorted(ORDER):
+    note("    " + name)
+
+note("")
+note("=" * 78)
+note("")
+
+for name, clr_type, depth in sorted(ORDER):
+    note("#" * 78)
+    note("TYPE  " + name)
+
+    try:
+        kind = "enum" if clr_type.IsEnum else ("interface" if clr_type.IsInterface else
+                                               ("struct" if clr_type.IsValueType else "class"))
+        note("      kind     : " + kind)
+        note("      assembly : " + str(clr_type.Assembly.GetName().Name))
+        note("      depth    : " + str(depth))
+
+        if clr_type.BaseType is not None:
+            note("      base     : " + str(clr_type.BaseType.FullName))
+    except Exception:
+        kind = "unknown"
+
+    note("")
+
+    if kind == "enum":
+        try:
+            note("    VALUES")
+
+            for value_name in clr_type.GetEnumNames():
+                note("        " + str(value_name))
+
+            note("")
+        except Exception as error:
+            note("    values unavailable: " + str(error))
+            note("")
+
+        continue
+
+    try:
+        fields = clr_type.GetFields(BindingFlags.Public | BindingFlags.Static)
+    except Exception:
+        fields = []
+
+    if fields:
+        note("    CONSTANTS")
+
+        for field in fields:
+            try:
+                note("        {} {}".format(field.FieldType.Name, field.Name))
+            except Exception:
+                continue
+
+        note("")
+
+    try:
+        properties = clr_type.GetProperties(INSTANCE_AND_STATIC)
+    except Exception as error:
+        properties = []
+        note("    properties unavailable: " + str(error))
+
+    if properties:
+        note("    PROPERTIES")
+
+        for prop in sorted(properties, key=lambda item: str(item.Name)):
+            try:
+                access = []
+
+                if prop.CanRead:
+                    access.append("get")
+                if prop.CanWrite:
+                    access.append("set")
+
+                note("        {} {}    [{}]".format(prop.PropertyType.Name, prop.Name,
+                                                    "/".join(access)))
+            except Exception:
+                continue
+
+        note("")
+
+    try:
+        methods = clr_type.GetMethods(INSTANCE_AND_STATIC | BindingFlags.DeclaredOnly)
+    except Exception as error:
+        methods = []
+        note("    methods unavailable: " + str(error))
+
+    listed = []
+
+    for method in methods:
+        try:
+            if method.IsSpecialName:              # property accessors and operators
+                continue
+
+            listed.append(signature(method))
+        except Exception:
+            continue
+
+    if listed:
+        note("    METHODS")
+
+        for line in sorted(listed):
+            note("        " + line)
+
+        note("")
+
+    for_this_type = EXTENSIONS.get(name, [])
+
+    if for_this_type:
+        note("    EXTENSION METHODS  (only visible where their namespace is imported)")
+
+        for method_signature, declaring, namespace, assembly_name in sorted(for_this_type):
+            note("        " + method_signature)
+            note("            declared in {}  (assembly {})".format(declaring, assembly_name))
+
+        note("")
+
+
+###################### saving ##########################################################
+
+report_text = "\n".join(REPORT)
+report_path = Path.Combine(Path.GetTempPath(), "zen_api_reference.txt")
+written = False
+
+try:
+    writer = File.CreateText(report_path)
+    writer.Write(report_text)
+    writer.Close()
+    written = True
+except Exception as error:
+    note("could not write the file: " + str(error))
+
+summary = "\n".join([
+    "Types described : " + str(len(ORDER)),
+    "Report lines    : " + str(len(REPORT)),
+    "Type limit hit  : " + str(CAPPED[0]),
+    "Written to file : " + str(written),
+    "",
+    str(report_path),
+    "",
+    "Far too long for this box. Send the file.",
+])
+
+window = ZenWindow()
+window.Initialize("ZEN API reference")
+window.AddMultiLineTextBox("summary", "Done:", summary)
+window.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>80</Row>
+  <Column>12</Column>
+</Script>

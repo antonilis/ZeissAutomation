@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### ZEN context diagnosis, part two ################################
+# The first run showed that code compiled together with the macro sees 96 members on a
+# ZenExperiment, while code compiled at runtime sees 71 - same object, same type, and the
+# file name makes no difference. That is the signature of .NET extension methods, which
+# IronPython only surfaces in a scope that has imported them.
+#
+# This run answers three things:
+#   1. exactly which 25 members are missing
+#   2. which .NET type and namespace declares them
+#   3. whether clr.ImportExtensions on that namespace brings them back in an exec'd scope
+#
+# It still only READS: GetByName, dir, hasattr and reflection over loaded assemblies.
+# Nothing is moved, executed, activated or saved.
+
+import sys
+import clr
+
+from System import AppDomain
+from System.IO import Directory, Path, File
+
+REPORT = []
+
+
+def note(text):
+    REPORT.append(str(text))
+
+
+TARGET = "ClearExperimentRegionsAndPositions"
+
+PROBE_SOURCE = """
+def probe(label):
+    exp = Zen.Acquisition.Experiments.GetByName(EXP_NAME)
+    names = dir(exp)
+
+    note("--- " + label + " ---")
+    note("    len(dir) : " + str(len(names)))
+    note("    has " + TARGET + " : " + str(TARGET in names))
+    note("")
+"""
+
+
+###################### choosing what to probe #########################################
+
+docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
+expfiles = Directory.GetFiles(Path.Combine(docfolder, "Experiment Setups"), "*.czexp")
+experiments = [Path.GetFileNameWithoutExtension(item) for item in expfiles]
+
+window = ZenWindow()
+window.Initialize("ZEN context diagnosis 2")
+window.AddDropDown("exp_name", "Experiment to probe (the same one as last time):", experiments, 0)
+
+result = window.Show()
+
+if result.HasCanceled:
+    raise SystemExit
+
+EXP_NAME = result.GetValue("exp_name")
+
+
+###################### 1. what exactly is missing #####################################
+
+exp = Zen.Acquisition.Experiments.GetByName(EXP_NAME)
+inside = dir(exp)
+
+exec(PROBE_SOURCE)
+outside_source = """
+def collect():
+    exp = Zen.Acquisition.Experiments.GetByName(EXP_NAME)
+    return dir(exp)
+"""
+exec(outside_source)
+outside = collect()
+
+missing = sorted(set(inside) - set(outside))
+extra = sorted(set(outside) - set(inside))
+
+note("Experiment: " + str(EXP_NAME))
+note("inside the macro : " + str(len(inside)) + " members")
+note("compiled at runtime : " + str(len(outside)) + " members")
+note("")
+note("--- the " + str(len(missing)) + " members only the macro can see ---")
+
+for name in missing:
+    note("    " + name)
+
+note("")
+
+if extra:
+    note("--- present only outside, unexpected ---")
+    for name in extra:
+        note("    " + name)
+    note("")
+
+
+###################### 2. who declares them ###########################################
+
+note("--- reflection: which .NET type declares " + TARGET + " ---")
+
+declaring = []
+
+for assembly in AppDomain.CurrentDomain.GetAssemblies():
+    try:
+        types = assembly.GetTypes()
+    except Exception:
+        continue
+
+    for clr_type in types:
+        try:
+            method = clr_type.GetMethod(TARGET)
+        except Exception:
+            continue
+
+        if method is not None:
+            declaring.append((clr_type.Namespace, clr_type.FullName, assembly.GetName().Name))
+
+for namespace, full_name, assembly_name in declaring:
+    note("    namespace : " + str(namespace))
+    note("    type      : " + str(full_name))
+    note("    assembly  : " + str(assembly_name))
+    note("")
+
+if not declaring:
+    note("    nothing found by reflection")
+    note("")
+
+note("    type(exp) as CLR : " + str(clr.GetClrType(type(exp)).FullName))
+note("    its assembly     : " + str(clr.GetClrType(type(exp)).Assembly.GetName().Name))
+note("")
+
+
+###################### 3. does ImportExtensions bring them back #######################
+
+note("--- clr.ImportExtensions in a runtime compiled scope ---")
+
+for namespace, full_name, assembly_name in declaring:
+    if not namespace:
+        continue
+
+    attempt = ("import clr\n"
+               "import " + namespace + "\n"
+               "clr.ImportExtensions(" + namespace + ")\n" + PROBE_SOURCE)
+
+    try:
+        exec(attempt)
+        probe("after clr.ImportExtensions(" + namespace + ")")
+    except Exception as error:
+        note("    " + namespace + " failed: " + str(error))
+        note("")
+
+if not declaring:
+    note("    skipped, no namespace to try")
+    note("")
+
+
+###################### report #########################################################
+
+report_text = "\n".join(REPORT)
+report_path = Path.Combine(Path.GetTempPath(), "zen_context_report2.txt")
+
+try:
+    writer = File.CreateText(report_path)
+    writer.Write(report_text)
+    writer.Close()
+except Exception as error:
+    report_text = report_text + "\n(could not write the file: " + str(error) + ")"
+
+window = ZenWindow()
+window.Initialize("ZEN context diagnosis 2")
+window.AddMultiLineTextBox("report", "Copy this, it is also in " + str(report_path) + " :", report_text)
+window.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>80</Row>
+  <Column>12</Column>
+</Script>

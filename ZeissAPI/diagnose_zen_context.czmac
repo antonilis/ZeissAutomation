@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### ZEN context diagnosis ##########################################
+# Run this once from the ZEN macro editor and send back the report it shows.
+#
+# It only READS. It never moves the stage, never executes an experiment, never activates
+# or saves anything. The only calls are GetByName, hasattr and dir.
+#
+# The question it answers: which contexts can see the experiment editing API, and what
+# exactly distinguishes them. Five contexts are probed with the SAME four lines of code,
+# differing only in where that code came from:
+#
+#   A  written straight into this .czmac, at the top level
+#   B  a function written straight into this .czmac
+#   C  a function created by exec of a source string      -&gt; co_filename "&lt;string&gt;"
+#   D  the same string, compiled with THIS MACRO'S co_filename
+#   E  a function created by execfile of a real .py file  -&gt; co_filename is that path
+#
+# C and E differ from each other only by co_filename. D differs from C only by
+# co_filename. So if D can see the API and C cannot, the gate is the name of the code
+# object, and a loader can simply compile plugins under the macro's own name.
+
+import sys
+from System.IO import Directory, Path, File
+
+REPORT = []
+
+
+def note(text):
+    REPORT.append(str(text))
+
+
+WANTED = ["ClearExperimentRegionsAndPositions", "ClearTileRegionsAndPositions",
+          "AddSinglePosition", "SetActive"]
+
+
+def describe(label, co_filename, type_name, n_dir, have):
+    """
+    Formats one result. Every lookup that matters is done by the caller, in the caller's own
+    code object, so that this function cannot contaminate what is being measured.
+    """
+    note("--- " + label + " ---")
+    note("    co_filename : " + str(co_filename))
+    note("    type(exp)   : " + str(type_name))
+    note("    len(dir)    : " + str(n_dir))
+    note("    has         : " + str(have))
+    note("    MISSING     : " + str([name for name in WANTED if name not in have]))
+    note("")
+
+
+# The same four lines for every context that is not written out by hand below
+PROBE_SOURCE = """
+def probe(label):
+    import sys
+
+    frame = sys._getframe()
+    exp = Zen.Acquisition.Experiments.GetByName(EXP_NAME)
+    have = [name for name in WANTED if hasattr(exp, name)]
+    n_dir = len(dir(exp))
+
+    describe(label, frame.f_code.co_filename, str(type(exp)), n_dir, have)
+"""
+
+
+###################### choosing what to probe #########################################
+
+docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
+expfiles = Directory.GetFiles(Path.Combine(docfolder, "Experiment Setups"), "*.czexp")
+experiments = [Path.GetFileNameWithoutExtension(item) for item in expfiles]
+
+window = ZenWindow()
+window.Initialize("ZEN context diagnosis")
+window.AddDropDown("exp_name", "Experiment to probe (pick the FCS one):", experiments, 0)
+
+result = window.Show()
+
+if result.HasCanceled:
+    raise SystemExit
+
+EXP_NAME = result.GetValue("exp_name")
+
+note("Probing experiment: " + str(EXP_NAME))
+note("Looking for: " + str(WANTED))
+note("")
+
+
+###################### A: top level of this .czmac ####################################
+
+frame = sys._getframe()
+MACRO_FILENAME = frame.f_code.co_filename
+
+exp = Zen.Acquisition.Experiments.GetByName(EXP_NAME)
+have = [name for name in WANTED if hasattr(exp, name)]
+n_dir = len(dir(exp))
+
+describe("A: top level of the .czmac", MACRO_FILENAME, str(type(exp)), n_dir, have)
+
+
+###################### B: a function inside this .czmac ###############################
+
+def probe_in_macro_function(label):
+    frame = sys._getframe()
+    exp = Zen.Acquisition.Experiments.GetByName(EXP_NAME)
+    have = [name for name in WANTED if hasattr(exp, name)]
+    n_dir = len(dir(exp))
+
+    describe(label, frame.f_code.co_filename, str(type(exp)), n_dir, have)
+
+
+probe_in_macro_function("B: a function defined in the .czmac")
+
+
+###################### C: exec of a source string #####################################
+
+try:
+    exec(PROBE_SOURCE)
+    probe("C: function from exec of a string")
+except Exception as error:
+    note("--- C failed: " + str(error) + "\n")
+
+
+###################### D: the same string under the macro's own name ##################
+
+try:
+    exec(compile(PROBE_SOURCE, MACRO_FILENAME, "exec"))
+    probe("D: same string compiled as " + str(MACRO_FILENAME))
+except Exception as error:
+    note("--- D failed: " + str(error) + "\n")
+
+
+###################### E: a real .py file on disk #####################################
+
+probe_path = Path.Combine(Path.GetTempPath(), "zen_context_probe.py")
+
+try:
+    writer = File.CreateText(probe_path)
+    writer.Write(PROBE_SOURCE)
+    writer.Close()
+
+    execfile(probe_path)
+    probe("E: function from execfile of " + str(probe_path))
+except Exception as error:
+    note("--- E failed: " + str(error) + "\n")
+
+
+###################### what Zen itself looks like #####################################
+
+note("--- the Zen object ---")
+note("    id(Zen)        : " + str(id(Zen)))
+note("    type(Zen)      : " + str(type(Zen)))
+note("    len(dir(Zen))  : " + str(len(dir(Zen))))
+note("")
+
+
+###################### report #########################################################
+
+report_text = "\n".join(REPORT)
+report_path = Path.Combine(Path.GetTempPath(), "zen_context_report.txt")
+
+try:
+    writer = File.CreateText(report_path)
+    writer.Write(report_text)
+    writer.Close()
+except Exception as error:
+    report_text = report_text + "\n(could not write the file: " + str(error) + ")"
+
+window = ZenWindow()
+window.Initialize("ZEN context diagnosis")
+window.AddMultiLineTextBox("report", "Copy this, it is also in " + str(report_path) + " :", report_text)
+window.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>80</Row>
+  <Column>12</Column>
+</Script>

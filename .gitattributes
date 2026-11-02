@@ -1,0 +1,41 @@
+# Line endings
+# =============================================================================
+# The repository always stores LF. What each working tree gets is decided HERE,
+# in a file that is committed and travels with every clone — not by each
+# developer's local core.autocrlf, which is invisible and easy to forget.
+#
+# After changing anything in this file, run:  git add --renormalize .
+# =============================================================================
+
+# Default: detect text, store it as LF, check it out with the platform's native
+# endings (CRLF on Windows, LF on Linux).
+*                       text=auto
+
+# Explicit types, so a new file never depends on git's content sniffing.
+*.py                    text
+*.md                    text
+*.json                  text
+*.txt                   text
+*.cfg                   text
+*.yml                   text
+*.yaml                  text
+
+# World A is Windows-only. These files are imported by IronPython inside ZEN and
+# opened in ZEN's .NET macro editor, which does not reliably render LF-only text.
+# Pin them to CRLF in EVERY working tree, including on Linux — so a file edited
+# here is byte-for-byte what the microscope PC expects.
+ZeissAPI/**             text eol=crlf
+*.czmac                 text eol=crlf
+
+# Microscope data and binary artefacts: never convert, never diff as text.
+*.czi                   binary
+*.raw                   binary
+*.fcs                   binary
+*.lsm                   binary
+*.czexp                 binary
+*.pkl                   binary
+*.png                   binary
+*.jpg                   binary
+*.tif                   binary
+*.tiff                  binary
+*.pdf                   binary

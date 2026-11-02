@@ -1,0 +1,602 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### what this probe answers #########################################################
+# The second trip for smart_SLB_imaging. The first probe established that the laser power is NOT in
+# GetDetectorSettings (that holds only MTBLSMImagingDevice) and that the stand's setting does not
+# reach an experiment either. The .czexp file shows where it really is:
+#
+#   ExperimentBlocks/AcquisitionBlock/SubDimensionSetups/MultiTrackSetup/Track/DetectionModeSetup/
+#   Lsm880ChannelTrackDetectionMode/TrackLaserSettings/ParameterCollection[MTBLKM980LaserLine639]/Intensity
+#
+# with Intensity in percent (0.2 = 0.2 %). This probe measures, in ONE run:
+#
+#   0. the context: objective, start position, where the experiment file lives, tiles
+#   1. a FAST copy of the imaging experiment (512x512, no averaging) written next to the original as
+#      zz_probe_*.czexp - and which of three calls loads an experiment from a file
+#   2. how CopyPixelsToArray has to be called: its overloads, the image's members, and one attempt per
+#      array type until one returns pixels
+#   3. the laser power through the FILE: copies at 1x, 2x and 0x Intensity, then 1x again
+#   4. the laser power through experiment.Core: a read-only walk for the track and the laser; if the
+#      639 laser line is found, a 2x write in memory, one frame, and the value put back
+#   5. focus: FindSurface twice, the software AF, a +-6 um sweep around the surface with the median of
+#      every frame, and StoreFocus / RecallFocus accuracy at the fluorescence peak
+#
+# THIS PROBE MOVES THE FOCUS AND ACQUIRES IMAGES. The laser never goes above MAX_FACTOR x the original.
+# The original .czexp is never written. At the end, also after an error, every zz_probe_* file it
+# created is closed and deleted and the stage goes back to where it started.
+#
+# Before running: stand in a well with a bilayer, roughly in focus, and check the names below.
+
+import sys
+import time
+
+from System import Array, Byte, Int32, Single, UInt16
+from System.IO import Directory, File, Path, SearchOption
+# System.Xml is not loaded into ZEN's IronPython by default, so the assembly has to be added
+# before anything can be imported from it
+import clr
+clr.AddReference("System.Xml")
+from System.Xml import XmlDocument
+
+for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
+    del sys.modules[_cached]
+
+from zen_lib.runtime_config import log
+
+
+###################### settings ########################################################################
+
+IMAGING_EXPERIMENT = "SLB_A655_imaging"
+AF_EXPERIMENT = "SLB_A655_zscan"
+LASER_LINE = "MTBLKM980LaserLine639"
+
+FAST_SIZE = 512
+MAX_FACTOR = 2.0
+MEDIAN_STEP = 16
+AF_TIMEOUT = 120
+
+SWEEP_HALF_RANGE = 6
+SWEEP_STEP = 1.0
+SWEEP_STEP_SLOW = 2.0   # used only when the fast copy could not be loaded
+RECALL_DISPLACEMENT = 20.0
+
+CORE_MAX_DEPTH = 7
+CORE_DESCEND = ["block", "setup", "track", "laser", "detection", "subdimension", "parameter",
+                "collection", "item", "mode"]
+CORE_REPORT = ["track", "laser", "intensity", "line"]
+
+
+###################### reporting #######################################################################
+
+REPORT = []
+
+
+def report(text):
+    REPORT.append(text)
+    log(text)
+
+
+def safe(label, function):
+    try:
+        return function()
+
+    except Exception as error:
+        report("{}: FAILED - {}".format(label, error))
+        return None
+
+
+def contains_any(text, words):
+    text = str(text).lower()
+    return any(word in text for word in words)
+
+
+def public(obj):
+    return [name for name in dir(obj) if not name.startswith("_")]
+
+
+###################### 0. context ######################################################################
+
+report("--- smart_SLB_imaging probe 2 ---")
+
+START = (Zen.Devices.Stage.ActualPositionX, Zen.Devices.Stage.ActualPositionY, Zen.Devices.Focus.ActualPosition)
+report("start x={} y={} z={}".format(*START))
+report("objective: {} ({}x)".format(
+    safe("objective name", lambda: Zen.Devices.ObjectiveChanger.ActualPositionName),
+    safe("objective magnification", lambda: Zen.Devices.ObjectiveChanger.Magnification)))
+
+imaging = Zen.Acquisition.Experiments.GetByName(IMAGING_EXPERIMENT)
+report("imaging.FileName = {!r}".format(safe("FileName", lambda: imaging.FileName)))
+report("imaging tiles={} regions={} positions={}".format(
+    safe("tiles", lambda: imaging.IsTilesExperiment(0)),
+    safe("regions", lambda: imaging.GetTileRegionInfos(0).Count),
+    safe("positions", lambda: imaging.GetSinglePositionInfos(0).Count)))
+
+CREATED_FILES = []
+LOADED_EXPERIMENTS = []
+
+
+###################### 1. experiment files #############################################################
+
+
+def experiment_file_path(experiment, name):
+    """
+    Full path of an experiment's .czexp. FileName may come back bare, so the Documents folder
+    is searched as a fallback and the route that worked is reported.
+    """
+    file_name = experiment.FileName
+
+    if file_name and Path.IsPathRooted(file_name) and File.Exists(file_name):
+        return file_name
+
+    documents = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
+    wanted = Path.GetFileName(file_name) if file_name else name + ".czexp"
+    found = Directory.GetFiles(documents, wanted, SearchOption.AllDirectories)
+    report("FileName not a full path; searched {} for {} -&gt; {}".format(documents, wanted, list(found)))
+    return found[0] if len(found) else None
+
+
+def write_variant(source_path, suffix, intensity_factor=None, fast=False):
+    """
+    A copy of the .czexp with the laser intensity multiplied and/or the frame made small. The
+    original file is only read. Returns the path of the copy.
+    """
+    document = XmlDocument()
+    document.PreserveWhitespace = True
+    document.Load(source_path)
+
+    if intensity_factor is not None:
+        xpath = "//TrackLaserSettings/ParameterCollection[@Id='{}']/Intensity".format(LASER_LINE)
+        nodes = document.SelectNodes(xpath)
+        for node in nodes:
+            node.InnerText = repr(float(node.InnerText) * intensity_factor)
+        report("  {}: {} Intensity node(s) -&gt; {}".format(suffix, nodes.Count, [n.InnerText for n in nodes]))
+
+    if fast:
+        half = FAST_SIZE / 2.0
+        edits = {
+            "FrameSize": "{0},{0}".format(FAST_SIZE),
+            "Frame": "{0},{0},{1},{1}".format(half, FAST_SIZE),
+            "ImageFrame": "{0},{0},{1},{1}".format(half, FAST_SIZE),
+            "AveragingNumber": "1",
+        }
+        for tag, value in edits.items():
+            nodes = document.SelectNodes("//" + tag)
+            for node in nodes:
+                node.InnerText = value
+            report("  {}: {} {} node(s) -&gt; {}".format(suffix, nodes.Count, tag, value))
+
+    stamp = time.strftime("%H%M%S")
+    target = Path.Combine(Path.GetDirectoryName(source_path),
+                          "zz_probe_{}_{}.czexp".format(stamp, suffix))
+    document.Save(target)
+    CREATED_FILES.append(target)
+    return target
+
+
+LOAD_ROUTE = []
+
+
+def load_experiment_file(path):
+    """
+    Try the three ways ZEN might load an experiment from a file, report which one worked and use
+    only that one afterwards.
+    """
+    name = Path.GetFileNameWithoutExtension(path)
+
+    def by_file_name():
+        return Zen.Acquisition.Experiments.GetByFileName(path)
+
+    def by_name():
+        return Zen.Acquisition.Experiments.GetByName(name)
+
+    def by_load():
+        experiment = ZenExperiment()
+        experiment.Load(path)
+        return experiment
+
+    routes = [("GetByFileName", by_file_name), ("GetByName", by_name), ("ZenExperiment().Load", by_load)]
+    if LOAD_ROUTE:
+        routes = [route for route in routes if route[0] == LOAD_ROUTE[0]]
+
+    for label, route in routes:
+        experiment = safe("load {} via {}".format(name, label), route)
+        if experiment is not None:
+            if not LOAD_ROUTE:
+                report("experiment files load via {}".format(label))
+                LOAD_ROUTE.append(label)
+            LOADED_EXPERIMENTS.append(experiment)
+            return experiment
+
+    return None
+
+
+###################### 2. pixels ######################################################################
+
+PIXEL_READER = []
+
+
+def bounds_size(image):
+    bounds = image.Bounds
+    for x_name, y_name in (("SizeX", "SizeY"), ("Width", "Height")):
+        if hasattr(bounds, x_name) and hasattr(bounds, y_name):
+            return int(getattr(bounds, x_name)), int(getattr(bounds, y_name))
+    return None
+
+
+def discover_pixel_reader(image):
+    """
+    CopyPixelsToArray() without arguments does not exist. Print what does, then try one array type
+    after another until a call fills it. The reader that worked is kept for every later frame.
+    """
+    report("CopyPixelsToArray overloads:\n{}".format(safe("doc", lambda: image.CopyPixelsToArray.__doc__)))
+    report("image members: {}".format(public(image)))
+
+    bounds = image.Bounds
+    report("image.Bounds members: {}".format(
+        [(name, safe("Bounds." + name, lambda: getattr(bounds, name))) for name in public(bounds)
+         if not callable(getattr(bounds, name, None))]))
+
+    for name in ("PixelType", "PixelTypeString", "ChannelCount", "Dimensions"):
+        if hasattr(image, name):
+            report("image.{} = {!r}".format(name, safe(name, lambda: getattr(image, name))))
+
+    size = bounds_size(image)
+    report("frame size from Bounds: {}".format(size))
+    if size is None:
+        return None
+
+    pixels = size[0] * size[1]
+    attempts = [
+        ("UInt16[n]", lambda: Array.CreateInstance(UInt16, pixels), 1),
+        ("Byte[2n]", lambda: Array.CreateInstance(Byte, 2 * pixels), 2),
+        ("Int32[n]", lambda: Array.CreateInstance(Int32, pixels), 1),
+        ("Single[n]", lambda: Array.CreateInstance(Single, pixels), 1),
+    ]
+
+    for label, make, bytes_per_value in attempts:
+        buffer = make()
+        try:
+            returned = image.CopyPixelsToArray(buffer)
+            data = returned if returned is not None and hasattr(returned, "Length") else buffer
+            nonzero = sum(1 for i in range(0, data.Length, max(1, data.Length // 1000)) if data[i] != 0)
+            report("CopyPixelsToArray({}) worked: returned {}, {} of ~1000 sampled values non-zero".format(
+                label, type(returned).__name__, nonzero))
+            if nonzero:
+                return make, bytes_per_value
+
+        except Exception as error:
+            report("CopyPixelsToArray({}): FAILED - {}".format(label, error))
+
+    return None
+
+
+def image_values(image):
+    make, bytes_per_value = PIXEL_READER[0]
+    buffer = make()
+    returned = image.CopyPixelsToArray(buffer)
+    data = returned if returned is not None and hasattr(returned, "Length") else buffer
+
+    if bytes_per_value == 2:
+        # raw little-endian 16-bit
+        return [data[i] + 256 * data[i + 1] for i in xrange(0, data.Length - 1, 2 * MEDIAN_STEP)]
+
+    return [data[i] for i in xrange(0, data.Length, MEDIAN_STEP)]
+
+
+def image_stats(label, image):
+    if not PIXEL_READER:
+        reader = discover_pixel_reader(image)
+        if reader is None:
+            report("no way to read pixels found - medians unavailable")
+            PIXEL_READER.append(None)
+            return None
+        PIXEL_READER.append(reader)
+
+    if PIXEL_READER[0] is None:
+        return None
+
+    started = time.time()
+    values = sorted(image_values(image))
+    count = len(values)
+    stats = {"median": float(values[count // 2]), "p99": float(values[int(count * 0.99)]),
+             "max": float(values[-1]), "seconds": time.time() - started}
+    report("{}: median={median} p99={p99} max={max} (pixels read in {seconds:.2f}s)".format(label, **stats))
+    return stats
+
+
+def frame(label, experiment):
+    """
+    One frame with AcquireImage(experiment), measured and closed. Also reports if the stage moved.
+    """
+    started = time.time()
+    image = safe(label, lambda: Zen.Acquisition.AcquireImage(experiment))
+    report("{}: acquired in {:.2f}s".format(label, time.time() - started))
+
+    x, y = Zen.Devices.Stage.ActualPositionX, Zen.Devices.Stage.ActualPositionY
+    if abs(x - START[0]) &gt; 1 or abs(y - START[1]) &gt; 1:
+        report("{}: STAGE MOVED to x={} y={}".format(label, x, y))
+
+    if image is None:
+        return None
+
+    stats = safe("{} stats".format(label), lambda: image_stats(label, image))
+    safe("{} close".format(label), lambda: image.Close())
+    return stats
+
+
+def linearity(label, low, high, zero, again):
+    if low and high and zero:
+        background = zero["median"]
+        ratio = (high["median"] - background) / max(low["median"] - background, 1e-9)
+        report("RESULT {}: background median = {}; (2x - bg) / (1x - bg) = {:.3f}  [{} = linear]".format(
+            label, background, ratio, MAX_FACTOR))
+    if low and again and zero:
+        kept = (again["median"] - zero["median"]) / max(low["median"] - zero["median"], 1e-9)
+        report("RESULT {}: signal kept after the frames in between = {:.3f}".format(label, kept))
+
+
+###################### 4. experiment.Core ##############################################################
+
+CORE_HITS = []
+
+
+def is_primitive(value):
+    return value is None or isinstance(value, (bool, int, long, float, str, unicode))
+
+
+def walk_core(obj, path, depth, seen):
+    """
+    Read-only walk along properties whose names sound like the path in the .czexp. Collections are
+    followed into their first few items. Everything whose name mentions a track, laser or intensity
+    is reported with its type or value, and objects whose Id is the laser line are collected.
+    """
+    if depth &gt; CORE_MAX_DEPTH or id(obj) in seen:
+        return
+    seen.add(id(obj))
+
+    identifier = safe("Id", lambda: getattr(obj, "Id", None)) if hasattr(obj, "Id") else None
+    if identifier is not None and str(identifier) == LASER_LINE:
+        report("  FOUND {} at {} ({}), members: {}".format(LASER_LINE, path, type(obj).__name__, public(obj)))
+        CORE_HITS.append((path, obj))
+
+    for name in public(obj):
+        try:
+            value = getattr(obj, name)
+        except Exception:
+            continue
+
+        if callable(value) and not hasattr(value, "Count"):
+            continue
+
+        child_path = "{}.{}".format(path, name)
+
+        if contains_any(name, CORE_REPORT):
+            shown = value if is_primitive(value) else type(value).__name__
+            report("  {} = {!r}".format(child_path, shown))
+
+        if is_primitive(value) or not contains_any(name, CORE_DESCEND + CORE_REPORT):
+            continue
+
+        if hasattr(value, "Count") and not isinstance(value, (str, unicode)):
+            count = safe(child_path + ".Count", lambda: value.Count) or 0
+            report("  {} : {} with {} item(s)".format(child_path, type(value).__name__, count))
+            for index in range(min(int(count), 6)):
+                item = safe("{}[{}]".format(child_path, index), lambda: value[index])
+                if item is not None:
+                    walk_core(item, "{}[{}]".format(child_path, index), depth + 1, seen)
+        else:
+            walk_core(value, child_path, depth + 1, seen)
+
+
+def read_intensity(obj):
+    """
+    The laser line's intensity, by whichever access the object supports. Returns (how, value).
+    """
+    routes = [
+        ("attribute Intensity", lambda: obj.Intensity),
+        ("indexer ['Intensity']", lambda: obj["Intensity"]),
+        ("GetValue('Intensity')", lambda: obj.GetValue("Intensity")),
+        ("GetParameter('Intensity')", lambda: obj.GetParameter("Intensity")),
+    ]
+    for how, route in routes:
+        try:
+            return how, route()
+        except Exception as error:
+            report("  read {}: {}".format(how, error))
+    return None, None
+
+
+def write_intensity(obj, how, value):
+    if how == "attribute Intensity":
+        obj.Intensity = value
+    elif how == "indexer ['Intensity']":
+        obj["Intensity"] = value
+    elif how == "GetValue('Intensity')":
+        obj.SetValue("Intensity", value)
+    else:
+        obj.SetParameter("Intensity", value)
+
+
+def core_route(experiment):
+    report("")
+    report("=== 4. experiment.Core ===")
+
+    core = experiment.Core
+    report("Core is {}; members: {}".format(type(core).__name__, public(core)))
+    walk_core(core, "Core", 0, set())
+
+    if not CORE_HITS:
+        report("RESULT Core: {} not found within depth {}".format(LASER_LINE, CORE_MAX_DEPTH))
+        return
+
+    path, laser = CORE_HITS[0]
+    how, original = read_intensity(laser)
+    report("Core laser at {}: read via {} = {!r} ({})".format(path, how, original, type(original).__name__))
+    if how is None:
+        return
+
+    low = frame("Core 1x", experiment)
+    try:
+        doubled = type(original)(float(str(original)) * MAX_FACTOR)
+        write_intensity(laser, how, doubled)
+        _, read_back = read_intensity(laser)
+        report("Core write {!r} -&gt; {!r}, read back {!r}".format(original, doubled, read_back))
+        high = frame("Core 2x", experiment)
+        if low and high:
+            report("RESULT Core: median 2x / 1x = {:.3f} (without background)".format(
+                high["median"] / max(low["median"], 1e-9)))
+    finally:
+        safe("Core restore", lambda: write_intensity(laser, how, original))
+        report("Core restored to {!r}".format(safe("Core read", lambda: read_intensity(laser)[1])))
+
+
+###################### 5. focus ########################################################################
+
+
+def focus_z():
+    return Zen.Devices.Focus.ActualPosition
+
+
+def focus_test(sweep_experiment, step):
+    report("")
+    report("=== 5. focus ===")
+
+    Zen.Devices.Focus.MoveTo(START[2])
+    surfaces = []
+    for attempt in (1, 2):
+        Zen.Devices.Focus.MoveTo(START[2])
+        started = time.time()
+        safe("FindSurface", lambda: Zen.Acquisition.FindSurface())
+        surfaces.append(focus_z())
+        report("FindSurface #{}: z={} ({:+.2f} from start) in {:.2f}s".format(
+            attempt, surfaces[-1], surfaces[-1] - START[2], time.time() - started))
+    surface = surfaces[-1]
+
+    Zen.Devices.Focus.MoveTo(START[2])
+    af_experiment = Zen.Acquisition.Experiments.GetByName(AF_EXPERIMENT)
+    af_experiment.SetActive()
+    started = time.time()
+    safe("FindAutofocus", lambda: Zen.Acquisition.FindAutofocus(af_experiment, AF_TIMEOUT))
+    z_af = focus_z()
+    report("FindAutofocus: z={} in {:.2f}s".format(z_af, time.time() - started))
+    report("RESULT: FindSurface repeatability {:.2f} um; software AF - surface = {:+.2f} um".format(
+        abs(surfaces[0] - surfaces[1]), z_af - surface))
+
+    sweep_experiment.SetActive()
+    profile = []
+    steps = int(round(2 * SWEEP_HALF_RANGE / step)) + 1
+    for i in range(steps):
+        offset = -SWEEP_HALF_RANGE + i * step
+        Zen.Devices.Focus.MoveTo(surface + offset)
+        stats = frame("sweep {:+.1f}".format(offset), sweep_experiment)
+        if stats:
+            profile.append((offset, stats["median"]))
+
+    report("sweep profile (offset from surface, median): {}".format(profile))
+    if not profile:
+        return
+
+    peak_offset, peak_median = max(profile, key=lambda pair: pair[1])
+    report("RESULT: fluorescence peak at surface {:+.1f} um (median {}); software AF at {:+.2f} um".format(
+        peak_offset, peak_median, z_af - surface))
+
+    # What a plugin would do every well: store the offset once, recall it everywhere else
+    peak_z = surface + peak_offset
+    Zen.Devices.Focus.MoveTo(peak_z)
+    safe("StoreFocus", lambda: Zen.Acquisition.StoreFocus())
+    Zen.Devices.Focus.MoveTo(peak_z + RECALL_DISPLACEMENT)
+    started = time.time()
+    safe("RecallFocus", lambda: Zen.Acquisition.RecallFocus())
+    report("RESULT: RecallFocus from +{} um returned to z={} ({:+.2f} from the peak) in {:.2f}s".format(
+        RECALL_DISPLACEMENT, focus_z(), focus_z() - peak_z, time.time() - started))
+
+
+###################### run ############################################################################
+
+try:
+    report("")
+    report("=== 1. fast copy of {} ===".format(IMAGING_EXPERIMENT))
+    source_path = safe("experiment path", lambda: experiment_file_path(imaging, IMAGING_EXPERIMENT))
+    report("source file: {}".format(source_path))
+
+    fast = None
+    fast_path = None
+    if source_path:
+        fast_path = safe("write fast", lambda: write_variant(source_path, "fast", fast=True))
+        if fast_path:
+            fast = load_experiment_file(fast_path)
+
+    sweep_step = SWEEP_STEP
+    if fast is None:
+        report("fast copy unavailable - using {} itself, sweep step {} um".format(IMAGING_EXPERIMENT, SWEEP_STEP_SLOW))
+        fast = imaging
+        sweep_step = SWEEP_STEP_SLOW
+    else:
+        report("fast copy: tiles={} regions={} positions={}".format(
+            safe("tiles", lambda: fast.IsTilesExperiment(0)),
+            safe("regions", lambda: fast.GetTileRegionInfos(0).Count),
+            safe("positions", lambda: fast.GetSinglePositionInfos(0).Count)))
+
+    fast.SetActive()
+
+    report("")
+    report("=== 2. pixels ===")
+    first = frame("first frame, AcquireImage(fast)", fast)
+
+    started = time.time()
+    image = safe("Execute(fast)", lambda: Zen.Acquisition.Execute(fast))
+    report("Execute(fast) took {:.2f}s".format(time.time() - started))
+    if image is not None:
+        safe("close", lambda: image.Close())
+
+    report("")
+    report("=== 3. laser power through the file ===")
+    if fast_path and fast is not imaging:
+        variants = {}
+        for suffix, factor in (("x2", MAX_FACTOR), ("x0", 0.0)):
+            path = safe("write " + suffix, lambda: write_variant(fast_path, suffix, intensity_factor=factor))
+            variants[suffix] = load_experiment_file(path) if path else None
+
+        low = frame("file 1x", fast)
+        high = frame("file {}x".format(MAX_FACTOR), variants["x2"]) if variants["x2"] else None
+        zero = frame("file 0x", variants["x0"]) if variants["x0"] else None
+        again = frame("file 1x again", fast)
+        linearity("file", low, high, zero, again)
+    else:
+        report("skipped - no fast copy loaded from a file")
+
+    safe("core route", lambda: core_route(fast))
+
+    safe("focus test", lambda: focus_test(fast, sweep_step))
+
+finally:
+    # A probe copy is the active experiment by now, and it is about to be deleted
+    safe("reactivate original", lambda: imaging.SetActive())
+    for experiment in LOADED_EXPERIMENTS:
+        safe("close experiment", lambda: experiment.Close())
+    for path in CREATED_FILES:
+        safe("delete " + path, lambda: File.Delete(path))
+    report("")
+    report("deleted {} probe file(s): {}".format(len(CREATED_FILES), CREATED_FILES))
+
+    safe("restore stage", lambda: Zen.Devices.Stage.MoveTo(START[0], START[1]))
+    safe("restore focus", lambda: Zen.Devices.Focus.MoveTo(START[2]))
+    report("restored x={} y={} z={}".format(*START))
+
+REPORT_TEXT = "\n".join(REPORT)
+
+output = ZenWindow()
+output.Initialize("smart_SLB_imaging probe 2")
+output.AddMultiLineTextBox("report", "Also written to the log:", REPORT_TEXT)
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>1</Row>
+  <Column>1</Column>
+</Script>

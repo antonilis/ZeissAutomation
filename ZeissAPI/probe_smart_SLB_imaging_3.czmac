@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### what this probe answers #########################################################
+# The two things smart_SLB_imaging needs, and nothing else:
+#
+#   1. can a macro read the counts of an image?   CopyPixelsToArray(ZenPixelType.Gray16) -&gt; median
+#   2. can a macro change the laser power of an experiment in memory, and does the image follow?
+#
+# Four frames of the imaging experiment on the same field: power 1x, 2x, 0, 1x again. From their
+# medians: whether the power change works, whether the signal is linear in it, the detector
+# background, and how much the field bleaches.
+#
+# The stage and the focus are not moved. The laser power is changed in memory only, never above
+# MAX_FACTOR x the original, and put back at the end, also after an error. The experiment is not
+# saved - if ZEN later asks whether to save changes to it, answer No.
+
+import sys
+import time
+
+for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
+    del sys.modules[_cached]
+
+from zen_lib.runtime_config import log
+
+
+###################### settings ########################################################################
+
+IMAGING_EXPERIMENT = "SLB_A655_imaging"
+LASER_LINE = "MTBLKM980LaserLine639"
+MAX_FACTOR = 2.0
+MEDIAN_STEP = 16    # every n-th pixel goes into the median
+
+
+###################### reporting #######################################################################
+
+REPORT = []
+
+
+def report(text):
+    REPORT.append(text)
+    log(text)
+
+
+def public(obj):
+    return [name for name in dir(obj) if not name.startswith("_")]
+
+
+###################### 1. counts #######################################################################
+
+
+def median_counts(label, image):
+    """
+    CopyPixelsToArray takes a pixel type and returns raw bytes; for Gray16 every pixel is two bytes,
+    low byte first.
+    """
+    started = time.time()
+    data = image.CopyPixelsToArray(ZenPixelType.Gray16)
+    values = sorted(data[i] + 256 * data[i + 1] for i in xrange(0, data.Length - 1, 2 * MEDIAN_STEP))
+    count = len(values)
+
+    result = {"median": float(values[count // 2]), "p99": float(values[int(count * 0.99)]),
+              "max": float(values[-1])}
+    report("{}: median={median} p99={p99} max={max} | {} bytes, read in {:.2f}s".format(
+        label, data.Length, time.time() - started, **result))
+    return result
+
+
+###################### 2. laser power ##################################################################
+
+
+def find_laser_intensity(experiment):
+    """
+    The Intensity parameter of the laser line, found along the path the second probe reported:
+    Core.CurrentExperimentBlock.SubDimensionSetups[*].ActivatedTracks[*]
+        .SelectedDetectionModeSetup.TrackLaserSettings.ParameterCollections[Id == LASER_LINE]
+    """
+    block = experiment.Core.CurrentExperimentBlock
+
+    for setup in block.SubDimensionSetups:
+        if not hasattr(setup, "ActivatedTracks"):
+            continue
+
+        for track in setup.ActivatedTracks:
+            for collection in track.SelectedDetectionModeSetup.TrackLaserSettings.ParameterCollections:
+                if str(collection.Id) == LASER_LINE:
+                    return collection["Intensity"]
+
+    return None
+
+
+def set_power(parameter, value, label):
+    parameter.Value = value
+    report("{}: set {!r}, read back {!r}".format(label, value, parameter.Value))
+
+
+###################### run ############################################################################
+
+report("--- smart_SLB_imaging probe 3 ---")
+report("ZenPixelType values: {}".format([name for name in public(ZenPixelType)]))
+try:
+    report("CopyPixelsToArray overloads:\n{}".format(ZenImage.CopyPixelsToArray.__doc__))
+except Exception as error:
+    report("CopyPixelsToArray overloads: not available here - {}".format(error))
+
+imaging = Zen.Acquisition.Experiments.GetByName(IMAGING_EXPERIMENT)
+imaging.SetActive()
+
+intensity = find_laser_intensity(imaging)
+if intensity is None:
+    report("RESULT: {} not found in {} - stopping".format(LASER_LINE, IMAGING_EXPERIMENT))
+    raise Exception("laser line not found")
+
+original = intensity.Value
+report("Intensity parameter: {} | members: {}".format(intensity, public(intensity)))
+report("Intensity.Value = {!r} ({})".format(original, type(original).__name__))
+
+
+def scaled(factor):
+    # Handed back in the type the parameter gave us
+    number = float(str(original)) * factor
+    return str(number) if isinstance(original, str) else type(original)(number)
+
+
+results = {}
+try:
+    for label, factor in (("1x", 1.0), ("{}x".format(MAX_FACTOR), MAX_FACTOR), ("0x", 0.0), ("1x again", 1.0)):
+        set_power(intensity, scaled(factor), label)
+
+        started = time.time()
+        try:
+            image = Zen.Acquisition.AcquireImage(imaging)
+        except Exception as error:
+            report("{}: acquisition FAILED - {}".format(label, error))
+            continue
+        report("{}: acquired in {:.2f}s".format(label, time.time() - started))
+
+        try:
+            results[label] = median_counts(label, image)
+        except Exception as error:
+            report("{}: reading counts FAILED - {}".format(label, error))
+        finally:
+            image.Close()
+
+finally:
+    try:
+        intensity.Value = original
+        report("restored Intensity to {!r}".format(intensity.Value))
+    except Exception as error:
+        report("RESTORE FAILED - {} - set the laser back to {!r} by hand".format(error, original))
+
+low, high = results.get("1x"), results.get("{}x".format(MAX_FACTOR))
+zero, again = results.get("0x"), results.get("1x again")
+
+if low and high and zero:
+    background = zero["median"]
+    report("RESULT: background (laser 0) median = {}".format(background))
+    report("RESULT: (2x - background) / (1x - background) = {:.3f}   [{} = works and is linear]".format(
+        (high["median"] - background) / max(low["median"] - background, 1e-9), MAX_FACTOR))
+if low and again and zero:
+    report("RESULT: signal kept after 2 frames in between = {:.3f}".format(
+        (again["median"] - zero["median"]) / max(low["median"] - zero["median"], 1e-9)))
+
+REPORT_TEXT = "\n".join(REPORT)
+
+output = ZenWindow()
+output.Initialize("smart_SLB_imaging probe 3")
+output.AddMultiLineTextBox("report", "Also written to the log:", REPORT_TEXT)
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>1</Row>
+  <Column>1</Column>
+</Script>

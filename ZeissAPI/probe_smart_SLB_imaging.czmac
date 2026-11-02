@@ -1,0 +1,488 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### what this probe answers #########################################################
+# Everything a smart_SLB_imaging plugin would depend on, measured in ONE run at the microscope:
+#
+#   1. where the laser power lives: every component and parameter of the experiment's detector
+#      settings and of the stand's hardware setting, with values for anything that looks like a laser
+#   2. whether writing it through the EXPERIMENT changes the image: the same field acquired at the
+#      original power, at double power, at zero power (detector background) and at the original again
+#      (the first and the last frame together give the bleaching per frame)
+#   3. the same through the STAND (ApplyHardwareSetting + AcquireImage), in case route 2 does nothing
+#   4. how long CopyPixelsToArray and a median in IronPython take, and how long Execute and
+#      AcquireImage(experiment) take - the price of a test frame
+#   5. Definite Focus: FindSurface twice from the same start, the software autofocus of the z-scan
+#      experiment from that start, and a +-6 um sweep around the surface with the median of every
+#      frame - where the glass is, where the autofocus goes, and where the bilayer really is
+#
+# THIS PROBE MOVES THE FOCUS AND ACQUIRES IMAGES, so it bleaches the field a little. It changes the
+# laser power in memory only, never above MAX_FACTOR times the original, and puts the original
+# detector settings and focus back at the end, also after an error. No experiment is ever saved.
+#
+# Before running: stand the stage in a well with a bilayer, roughly in focus, and set the names below.
+
+import sys
+import time
+
+# Same reason as in the macros: ZEN keeps its Python engine alive between runs, so an edited
+# helper would otherwise keep running its previous version.
+for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
+    del sys.modules[_cached]
+
+from zen_lib.runtime_config import log
+
+
+###################### settings ########################################################################
+
+IMAGING_EXPERIMENT = "SLB_A655_imaging"     # the post experiment whose laser power we want to set
+AF_EXPERIMENT = "SLB_A655_zscan"            # the experiment smart_focus runs the software AF with
+
+# Substrings that make a component or a parameter worth printing in full
+LASER_HINTS = ["laser", "639", "attenu", "transm", "power", "intensit"]
+# Substrings that make a parameter a candidate for "the laser power"
+POWER_HINTS = ["transmission", "attenuation", "power"]
+
+MAX_FACTOR = 2.0        # the power is never raised above this multiple of the original
+MEDIAN_STEP = 16        # every n-th pixel goes into the median
+AF_TIMEOUT = 120        # seconds
+
+RUN_STAND_ROUTE = True
+RUN_FOCUS_TEST = True
+SWEEP_HALF_RANGE = 6    # um either side of the Definite Focus surface
+SWEEP_STEP = 1.0        # um
+
+
+###################### reporting #######################################################################
+
+REPORT = []
+IMAGE_DESCRIBED = []
+
+
+def report(text):
+    REPORT.append(text)
+    log(text)
+
+
+def safe(label, function):
+    """
+    Run one measurement. A failure is a result too: it is reported and the probe carries on,
+    because every later section is worth having even when an earlier one breaks.
+    """
+    try:
+        return function()
+
+    except Exception as error:
+        report("{}: FAILED - {}".format(label, error))
+        return None
+
+
+def members(obj, words):
+    return [name for name in dir(obj) if any(word in name.lower() for word in words)]
+
+
+def is_hint(text, hints):
+    text = str(text).lower()
+    return any(hint in text for hint in hints)
+
+
+###################### 1. where does the laser power live ##############################################
+
+
+def dump_setting(label, setting):
+    """
+    Print every component of a ZenHardwareSetting with its parameter names, and the values of
+    anything that looks like a laser. Returns the (component, parameter, value) triples that could
+    be the laser power.
+    """
+    candidates = []
+
+    if setting is None:
+        report("{}: no setting".format(label))
+        return candidates
+
+    component_ids = list(setting.GetAllComponentIds())
+    report("{}: {} components".format(label, len(component_ids)))
+
+    for component_id in component_ids:
+        names = safe("{} {} names".format(label, component_id),
+                     lambda: list(setting.GetAllParameterNames(component_id))) or []
+        active = safe("{} {} active".format(label, component_id),
+                      lambda: setting.IsActivated(component_id))
+
+        report("  [{}] active={} : {}".format(component_id, active, ", ".join(names)))
+
+        for name in names:
+            if is_hint(component_id, LASER_HINTS) or is_hint(name, LASER_HINTS):
+                value = safe("{} {}.{}".format(label, component_id, name),
+                             lambda: setting.GetParameter(component_id, name))
+                report("      {}.{} = {!r} ({})".format(component_id, name, value, type(value).__name__))
+
+                if is_hint(name, POWER_HINTS) and value is not None:
+                    candidates.append((component_id, name, value))
+
+    report("{}: power candidates {}".format(label, [(c, n) for c, n, v in candidates]))
+    return candidates
+
+
+###################### 4. pixels and timing ############################################################
+
+
+def image_stats(label, image):
+    """
+    Median, 99th percentile, maximum and saturated fraction of an image, computed the way a plugin
+    would have to compute them: CopyPixelsToArray and plain IronPython. Both steps are timed.
+    """
+    if image is None:
+        report("{}: no image".format(label))
+        return None
+
+    # Once: if the array turns out to be Byte[] with twice as many entries as pixels, it is raw
+    # 16-bit data and the median below is a median of bytes, not of counts
+    if not IMAGE_DESCRIBED:
+        IMAGE_DESCRIBED.append(True)
+        for name in members(image, ["pixel", "bound", "size", "width", "height", "type"]):
+            report("  image.{} = {!r}".format(name, safe("image." + name, lambda: getattr(image, name))))
+
+    started = time.time()
+    pixels = image.CopyPixelsToArray()
+    copy_seconds = time.time() - started
+
+    rank = safe("{} rank".format(label), lambda: pixels.Rank)
+    length = pixels.Length
+
+    started = time.time()
+    if rank == 1:
+        sample = [pixels[i] for i in xrange(0, length, MEDIAN_STEP)]
+    else:
+        sample = [value for index, value in enumerate(pixels) if index % MEDIAN_STEP == 0]
+    sample.sort()
+    median_seconds = time.time() - started
+
+    count = len(sample)
+    stats = {
+        "median": float(sample[count // 2]),
+        "p99": float(sample[int(count * 0.99)]),
+        "max": float(sample[-1]),
+        "saturated": sum(1 for value in sample if value &gt;= 65535) / float(count),
+    }
+
+    report("{}: median={median} p99={p99} max={max} saturated={saturated:.5f} | "
+           "array {kind} rank={rank} length={length} | copy {copy:.2f}s, median {med:.2f}s".format(
+               label, kind=type(pixels).__name__, rank=rank, length=length,
+               copy=copy_seconds, med=median_seconds, **stats))
+    return stats
+
+
+def acquire(label, function):
+    """
+    Acquire one image, time it, measure it and close it again.
+    """
+    started = time.time()
+    image = safe(label, function)
+    report("{}: acquired in {:.2f}s".format(label, time.time() - started))
+
+    x, y = Zen.Devices.Stage.ActualPositionX, Zen.Devices.Stage.ActualPositionY
+    if abs(x - START_XY[0]) &gt; 1 or abs(y - START_XY[1]) &gt; 1:
+        report("{}: STAGE MOVED to x={} y={} (start x={} y={})".format(label, x, y, START_XY[0], START_XY[1]))
+
+    stats = safe("{} stats".format(label), lambda: image_stats(label, image))
+
+    if image is not None:
+        safe("{} close".format(label), lambda: image.Close())
+
+    return stats
+
+
+def scaled(value, factor):
+    """
+    The value multiplied, in the type it came in. SetParameter has separate overloads for float,
+    int and str, and handing back the type we were given is the least surprising choice.
+    """
+    if isinstance(value, str):
+        return str(float(value) * factor)
+
+    if isinstance(value, int):
+        return int(round(value * factor))
+
+    return float(value) * factor
+
+
+###################### 2. the experiment route #########################################################
+
+
+def find_working_parameter(experiment, candidates):
+    """
+    For each candidate, write double its value through the experiment and read it back. The first
+    one whose read-back actually changed is the laser power as far as the experiment is concerned.
+    """
+    for component_id, name, value in candidates:
+
+        try:
+            if float(value) == 0:
+                report("  {}.{} is 0, cannot be doubled - skipped".format(component_id, name))
+                continue
+
+            setting = experiment.GetDetectorSettings(0)
+            setting.SetParameter(component_id, name, scaled(value, MAX_FACTOR))
+            experiment.SetDetectorSettings(0, setting)
+
+            read_back = experiment.GetDetectorSettings(0).GetParameter(component_id, name)
+            report("  write {}.{}: {!r} -&gt; {!r}, read back {!r}".format(
+                component_id, name, value, scaled(value, MAX_FACTOR), read_back))
+
+            if str(read_back) != str(value):
+                return component_id, name, value
+
+        except Exception as error:
+            report("  write {}.{}: FAILED - {}".format(component_id, name, error))
+
+    return None
+
+
+def set_power(experiment, component_id, name, value):
+    setting = experiment.GetDetectorSettings(0)
+    setting.SetParameter(component_id, name, value)
+    experiment.SetDetectorSettings(0, setting)
+
+
+def experiment_route(experiment, candidates, original):
+
+    report("")
+    report("=== 2. experiment route ===")
+
+    working = find_working_parameter(experiment, candidates)
+
+    # Whatever the search wrote, start the images from the untouched settings
+    experiment.SetDetectorSettings(0, original.Clone())
+
+    if working is None:
+        report("no candidate changed on read-back - the experiment route does not reach the laser")
+        return None
+
+    component_id, name, value = working
+    report("laser power is {}.{} = {!r}".format(component_id, name, value))
+
+    results = {}
+    results["original"] = acquire("Execute at original power",
+                                  lambda: Zen.Acquisition.Execute(experiment))
+
+    safe("set double", lambda: set_power(experiment, component_id, name, scaled(value, MAX_FACTOR)))
+    results["double"] = acquire("Execute at {}x power".format(MAX_FACTOR),
+                                lambda: Zen.Acquisition.Execute(experiment))
+
+    safe("set zero", lambda: set_power(experiment, component_id, name, scaled(value, 0)))
+    results["zero"] = acquire("Execute at zero power", lambda: Zen.Acquisition.Execute(experiment))
+
+    experiment.SetDetectorSettings(0, original.Clone())
+    results["original_again"] = acquire("Execute at original power, again",
+                                        lambda: Zen.Acquisition.Execute(experiment))
+
+    # One frame through AcquireImage, to see whether it is cheaper than Execute for a test frame
+    results["acquire_image"] = acquire("AcquireImage(experiment) at original power",
+                                       lambda: Zen.Acquisition.AcquireImage(experiment))
+
+    first, double, zero, last = (results.get(k) for k in ("original", "double", "zero", "original_again"))
+
+    if first and double and zero:
+        background = zero["median"]
+        ratio = (double["median"] - background) / max(first["median"] - background, 1e-9)
+        report("background (zero power) median = {}".format(background))
+        report("RESULT: (double - background) / (original - background) = {:.3f}   "
+               "[{} means linear]".format(ratio, MAX_FACTOR))
+
+    if first and last and zero:
+        kept = (last["median"] - zero["median"]) / max(first["median"] - zero["median"], 1e-9)
+        report("RESULT: signal kept after 3 frames in between = {:.3f} (bleaching)".format(kept))
+
+    return working
+
+
+###################### 3. the stand route ##############################################################
+
+
+def stand_route():
+
+    report("")
+    report("=== 3. stand route ===")
+
+    original = Zen.Devices.ReadHardwareSetting()
+    candidates = dump_setting("stand", original)
+
+    if not candidates:
+        report("no power candidate in the stand setting")
+        return
+
+    component_id, name, value = candidates[0]
+
+    try:
+        if float(value) == 0:
+            report("{}.{} is 0 - stand route skipped".format(component_id, name))
+            return
+    except Exception:
+        report("{}.{} = {!r} is not a number - stand route skipped".format(component_id, name, value))
+        return
+
+    first = acquire("AcquireImage() snap, stand untouched", lambda: Zen.Acquisition.AcquireImage(False))
+
+    try:
+        # Only the laser component is applied, so that nothing else in the light path moves
+        changed = original.Clone()
+        changed.SetAllComponentInactive()
+        changed.SetComponentActive(component_id)
+        changed.SetParameter(component_id, name, scaled(value, MAX_FACTOR))
+        Zen.Devices.ApplyHardwareSetting(changed)
+
+        read_back = Zen.Devices.ReadHardwareSetting().GetParameter(component_id, name)
+        report("stand write {}.{}: {!r} -&gt; {!r}, read back {!r}".format(
+            component_id, name, value, scaled(value, MAX_FACTOR), read_back))
+
+        double = acquire("AcquireImage() snap, stand at {}x".format(MAX_FACTOR),
+                         lambda: Zen.Acquisition.AcquireImage(False))
+
+        if first and double:
+            report("RESULT stand: median ratio double / original = {:.3f}".format(
+                double["median"] / max(first["median"], 1e-9)))
+
+    finally:
+        restore = original.Clone()
+        restore.SetAllComponentInactive()
+        restore.SetComponentActive(component_id)
+        safe("stand restore", lambda: Zen.Devices.ApplyHardwareSetting(restore))
+
+
+###################### 5. Definite Focus against the software autofocus ################################
+
+
+def focus_z():
+    return Zen.Devices.Focus.ActualPosition
+
+
+def focus_test(imaging_experiment):
+
+    report("")
+    report("=== 5. Definite Focus ===")
+    report("Zen.Acquisition focus members: {}".format(members(Zen.Acquisition, ["focus", "surface"])))
+    report("Zen.Devices focus members: {}".format(members(Zen.Devices, ["focus", "stabil", "definite"])))
+
+    start = focus_z()
+    report("start z = {}".format(start))
+
+    surfaces = []
+    for attempt in (1, 2):
+        Zen.Devices.Focus.MoveTo(start)
+        started = time.time()
+        returned = safe("FindSurface #{}".format(attempt), lambda: Zen.Acquisition.FindSurface())
+        z = focus_z()
+        surfaces.append(z)
+        report("FindSurface #{}: returned {!r}, focus now {} ({:+.2f} from start) in {:.2f}s".format(
+            attempt, returned, z, z - start, time.time() - started))
+
+    Zen.Devices.Focus.MoveTo(start)
+    af_experiment = Zen.Acquisition.Experiments.GetByName(AF_EXPERIMENT)
+    af_experiment.SetActive()
+    started = time.time()
+    returned = safe("FindAutofocus", lambda: Zen.Acquisition.FindAutofocus(af_experiment, AF_TIMEOUT))
+    z_af = focus_z()
+    report("FindAutofocus({}): returned {!r}, focus now {} in {:.2f}s".format(
+        AF_EXPERIMENT, returned, z_af, time.time() - started))
+
+    surface = surfaces[-1]
+    report("RESULT: FindSurface repeatability = {:.2f} um".format(abs(surfaces[0] - surfaces[1])))
+    report("RESULT: software AF - surface = {:+.2f} um".format(z_af - surface))
+
+    # Where the bilayer really is, relative to the surface Definite Focus found
+    imaging_experiment.SetActive()
+    profile = []
+    steps = int(round(2 * SWEEP_HALF_RANGE / SWEEP_STEP)) + 1
+
+    for i in range(steps):
+        offset = -SWEEP_HALF_RANGE + i * SWEEP_STEP
+        Zen.Devices.Focus.MoveTo(surface + offset)
+        stats = acquire("sweep {:+.1f} um".format(offset),
+                        lambda: Zen.Acquisition.AcquireImage(imaging_experiment))
+        if stats:
+            profile.append((offset, stats["median"]))
+
+    if profile:
+        best = max(profile, key=lambda pair: pair[1])
+        report("RESULT: fluorescence peak at surface {:+.1f} um (median {}); software AF was at {:+.2f} um".format(
+            best[0], best[1], z_af - surface))
+        report("sweep profile (offset, median): {}".format(profile))
+
+
+###################### run ############################################################################
+
+report("--- smart_SLB_imaging probe ---")
+
+imaging = Zen.Acquisition.Experiments.GetByName(IMAGING_EXPERIMENT)
+imaging.SetActive()
+start_z = focus_z()
+START_XY = (Zen.Devices.Stage.ActualPositionX, Zen.Devices.Stage.ActualPositionY)
+report("start position x={} y={} z={}".format(START_XY[0], START_XY[1], start_z))
+
+
+def layout(name, experiment):
+    """
+    Tiles and positions an experiment carries. An imaging experiment with either would drive the
+    stage away from this field on Execute, which is why the acquisitions below depend on it.
+    """
+    tiles = safe(name + " IsTilesExperiment", lambda: experiment.IsTilesExperiment(0))
+    regions = safe(name + " tile regions", lambda: experiment.GetTileRegionInfos(0).Count)
+    positions = safe(name + " positions", lambda: experiment.GetSinglePositionInfos(0).Count)
+    report("{}: IsTilesExperiment={} tile regions={} single positions={}".format(name, tiles, regions, positions))
+    return bool(tiles) or bool(regions) or bool(positions)
+
+
+imaging_has_layout = layout(IMAGING_EXPERIMENT, imaging)
+safe("af layout", lambda: layout(AF_EXPERIMENT, Zen.Acquisition.Experiments.GetByName(AF_EXPERIMENT)))
+
+if imaging_has_layout:
+    report("{} has tiles or positions - ALL ACQUISITIONS SKIPPED, only section 1 runs. "
+           "Use an imaging experiment without tiles and positions.".format(IMAGING_EXPERIMENT))
+
+report("experiment members that could matter: {}".format(
+    members(imaging, ["detector", "laser", "channel", "track", "hardware", "setting", "light", "power"])))
+
+original_settings = imaging.GetDetectorSettings(0)
+backup = original_settings.Clone()
+report("GetDetectorSettings(0) is a {}; its members: {}".format(
+    type(original_settings).__name__, [m for m in dir(original_settings) if not m.startswith("_")]))
+
+try:
+    report("")
+    report("=== 1. experiment detector settings ===")
+    experiment_candidates = dump_setting("experiment", original_settings)
+
+    if not imaging_has_layout:
+        safe("experiment route", lambda: experiment_route(imaging, experiment_candidates, backup))
+
+        if RUN_STAND_ROUTE:
+            safe("stand route", stand_route)
+
+        if RUN_FOCUS_TEST:
+            safe("focus test", lambda: focus_test(imaging))
+
+finally:
+    safe("restore detector settings", lambda: imaging.SetDetectorSettings(0, backup))
+    safe("restore stage", lambda: Zen.Devices.Stage.MoveTo(START_XY[0], START_XY[1]))
+    safe("restore focus", lambda: Zen.Devices.Focus.MoveTo(start_z))
+    report("")
+    report("restored detector settings and position x={} y={} z={}".format(START_XY[0], START_XY[1], start_z))
+
+REPORT_TEXT = "\n".join(REPORT)
+
+output = ZenWindow()
+output.Initialize("smart_SLB_imaging probe")
+output.AddMultiLineTextBox("report", "Also written to the log:", REPORT_TEXT)
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>1</Row>
+  <Column>1</Column>
+</Script>
