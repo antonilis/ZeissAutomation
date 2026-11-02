@@ -4,6 +4,11 @@
   <Version>1.0</Version>
   <Language>Python</Language>
   <Text>
+###################### where to put this file before running it ######################################
+# This is a diagnostic, kept out of the production macros in ZeissAPI/diagnostics/.
+# It imports zen_lib, so it only works from the folder main_macro.czmac runs from (ZeissAPI/ in the
+# repo, with zen_lib/ next to it). Copy it there for the run, and delete it there afterwards.
+#
 ###################### what this probe answers #########################################################
 # The two things smart_SLB_imaging needs, and nothing else:
 #

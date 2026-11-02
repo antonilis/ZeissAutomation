@@ -4,6 +4,13 @@
   <Version>1.0</Version>
   <Language>Python</Language>
   <Text>
+###################### where to put this file before running it ######################################
+# This is a diagnostic, kept out of the production macros in ZeissAPI/diagnostics/.
+# It imports zen_lib, so it only works from the folder main_macro.czmac runs from (ZeissAPI/ in the
+# repo, with zen_lib/ next to it). Copy it there for the run, and delete it there afterwards.
+# It also imports zen_lib._probe_context, so copy diagnostics/_probe_context.py into zen_lib/ as
+# well, and remove both copies when you are done.
+#
 ###################### what can an imported module see ################################################
 # A plugin in adaptive/ is not imported: main_macro reads it and runs it in the macro's own
 # namespace, so it never had a namespace of its own and Zen was there before it arrived. That

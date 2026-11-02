@@ -1,3 +1,7 @@
+# Kept in ZeissAPI/diagnostics/ so it does not sit among the production modules. To run
+# probe_zen_context.czmac, copy this file into ZeissAPI/zen_lib/ (see below why it has to be there),
+# and remove it from zen_lib/ afterwards.
+#
 ###################### diagnostic module, delete once the question is answered ########################
 # This file exists to answer one question: what can a NORMALLY IMPORTED module inside zen_lib
 # see of the names ZEN injects into a macro?

@@ -4,6 +4,11 @@
   <Version>1.0</Version>
   <Language>Python</Language>
   <Text>
+###################### where to put this file before running it ######################################
+# This is a diagnostic, kept out of the production macros in ZeissAPI/diagnostics/.
+# Standalone: it does not import zen_lib and reads no config. Copy it into any folder ZEN loads
+# macros from and run it from the macro editor. The report is written to the Windows temp folder.
+#
 ###################### ZEN scripting API dump #########################################
 # Produces a reference of everything the ZEN macro API offers, by reading .NET metadata.
 #
