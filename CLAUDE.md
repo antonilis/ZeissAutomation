@@ -352,4 +352,27 @@ With an object selection, two more flags:
 World A cannot be run outside ZEN. `.czmac` files are XML wrappers — the Python source
 sits inside `<Text>` and must be XML-escaped (`&gt;`, `&lt;`, `&amp;`).
 
-<!-- TODO: fill in the venv activation command and test command for this machine. -->
+## Tests
+
+```
+python3 -m venv .venv
+.venv/bin/pip install -c requirements.txt -r requirements-dev.txt numpy pylibCZIrw matplotlib
+.venv/bin/python -m pytest                                    # everything that needs no data
+ZEISS_TEST_DATA=/media/dysk/MPI .venv/bin/python -m pytest -m data   # also the real .czi files
+```
+
+`tests/world_a/` runs ZeissAPI/zen_lib in CPython against fakes of `System.*`, `clr` and `Zeiss.*`
+(`tests/support/zen_fakes.py`); `tests/contract/` checks the command line between the worlds and
+the two-runtime rule; `tests/world_b/` the analysis side, including metadata of real `.czi` files
+(`tests/fixtures/czi_metadata/`, scrubbed by `make_czi_fixtures.py`). What only ZEN can show — real
+.NET paths, the real interpreter — is for the autotest inside ZEN.
+
+Rules:
+
+- Run `pytest` before every commit that changes code.
+- Changing an existing test — an assertion, an expected value, removing a test, adding an
+  `xfail` — is a commit of its own, with the reason in the commit message. Never in the same
+  commit as a change to production code.
+- A known bug is an `xfail(strict=True)` whose `reason` names the file, the line and the bug, often
+  next to a test freezing the current behaviour. When the xfail starts passing (strict turns that
+  into a failure), remove the xfail marker and the frozen counterpart, in a commit of their own.
