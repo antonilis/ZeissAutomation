@@ -11,6 +11,9 @@ Files
 
 ``path_config.json``
 ~~~~~~~~~~~~~~~~~~~~
+Per machine and git-ignored. The repository holds its template, ``path_config.example.json``;
+copy it to ``path_config.json`` and set the paths of the machine, or run ``install.bat``.
+
 Contains paths related to the project setup, including:
 
 * Path to the Python virtual environment

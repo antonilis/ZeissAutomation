@@ -16,6 +16,11 @@ import json
 
 CONFIG_DIR_NAME = "config"
 PATH_CONFIG_NAME = "path_config.json"
+
+# path_config.json differs per microscope PC, so the repository holds only its template,
+# path_config.example.json, and each machine keeps its own git-ignored copy, made by hand or
+# by install.bat. The presets below are the same everywhere and are tracked as they are.
+PATH_CONFIG_EXAMPLE_NAME = "path_config.example.json"
 PROCESSING_CONFIG_NAME = "processing_config.json"
 SELECTION_CONFIG_NAME = "selection_config.json"
 
@@ -81,6 +86,13 @@ def selection_config_file():
     :return: str absolute path to selection_config.json
     """
     return Path.Combine(config_dir(), SELECTION_CONFIG_NAME)
+
+
+def path_config_example_file():
+    """
+    :return: str absolute path to the template of path_config.json
+    """
+    return Path.Combine(config_dir(), PATH_CONFIG_EXAMPLE_NAME)
 
 
 def adaptive_dir():
@@ -162,6 +174,17 @@ class RuntimeConfig:
     def __init__(self, config_path=None):
 
         self.config_path = config_path or path_config_file()
+
+        # Fail with the remedy in the message: after a fresh checkout the file is missing
+        # simply because nobody has made it from the template yet, and a bare "file not
+        # found" from inside json loading does not say that
+        if not File.Exists(self.config_path):
+            msg = ("Missing {}. Copy {} to that name and set the paths of this machine, "
+                   "or run install.bat.").format(self.config_path, path_config_example_file())
+            log(msg)
+
+            raise IOError(msg)
+
         self.config = read_json(self.config_path)
 
         # Destination of every log() call on the ZEN side
