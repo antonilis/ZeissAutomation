@@ -62,6 +62,13 @@ algorithm-specific fields may also be present.
 
 ## Where paths come from
 
+**`path_config.json` is per machine.** The repository holds only its template,
+`path_config.example.json`; each microscope PC keeps its own git-ignored copy (made by hand or
+by `install.bat`), because the paths differ between machines. A missing `path_config.json` stops
+the macro with a message naming the template. A new key goes into the **template** (and into
+each local copy). `processing_config.json` and `selection_config.json` are shared and tracked
+as they are.
+
 The config folder belongs to the ZEN runtime: it sits in `ZeissAPI/config/`, next to the
 macros. `ZeissAPI/zen_lib/runtime_config.py` is the **only** place that knows how to find it — it
 resolves `./config/` relative to its own `__file__`, so nothing depends on ZEN's working
@@ -86,7 +93,7 @@ with there once the summary has been confirmed, and offers to start from them ne
 missing key falls back to `last_setup.json` next to the macros, and a failure to write is
 logged and ignored, because recording the settings must never cost an acquisition.
 
-If you need a new path, add a key to `path_config.json` and surface it as an attribute on
+If you need a new path, add a key to `path_config.example.json` (and to the local copies) and surface it as an attribute on
 `RuntimeConfig`. Do not read the JSON again somewhere else, and do not hardcode a path.
 
 ## Layout
@@ -122,7 +129,7 @@ If you need a new path, add a key to `path_config.json` and surface it as an att
   its own folder.
 - `ZeissAPI/zen_lib/path_manager_main_macro.py` — every result path and filename is built here. Do not build paths inline.
 - `ZeissAPI/zen_lib/execute_python.py` — the subprocess bridge.
-- `ZeissAPI/config/` — machine paths (`path_config.json`), named analysis presets
+- `ZeissAPI/config/` — machine paths (`path_config.json`, git-ignored; template `path_config.example.json`), named analysis presets
   (`processing_config.json`) and named object selection presets (`selection_config.json`).
 - `data_processing/main_processor.py` — World B entry point.
 - `data_processing/image_analysis/` — pluggable analysers, auto-registered (see below).
@@ -327,7 +334,7 @@ Follow `CODING_STYLE.md`. The short version:
 
 ## Running
 
-World B, standalone, from the project root:
+World B, standalone, from the project root (needs no `path_config.json`):
 
 ```
 python data_processing/main_processor.py --type=overview --file_path=<abs .czi> \
