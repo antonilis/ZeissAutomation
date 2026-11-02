@@ -43,6 +43,7 @@ class FakeFileSystem:
     def __init__(self):
         self.dirs = set()
         self.files = {}
+        self.names = {}
         self.mtimes = {}
         self._clock = 0
 
@@ -51,6 +52,7 @@ class FakeFileSystem:
     def write_file(self, path, text="", mtime=None):
         self._clock += 1
         self.files[_key(path)] = text
+        self.names[_key(path)] = path
         self.mtimes[_key(path)] = self._clock if mtime is None else mtime
         self.make_dirs(ntpath.dirname(path))
 
@@ -121,7 +123,8 @@ def build_system_io(fs):
         @staticmethod
         def GetFiles(path):
             folder = _key(path)
-            return [k for k in fs.files if ntpath.dirname(k) == folder]
+            # .NET returns the names as written, so the fake does too
+            return [fs.names[k] for k in fs.files if ntpath.dirname(k) == folder]
 
     class File(object):
         @staticmethod
