@@ -138,6 +138,11 @@ If you need a new path, add a key to `path_config.example.json` (and to the loca
 - `data_processing/image_analysis/pixel_stage_converter.py` — pixels → stage micrometres.
 - `IO/` — `.czi` reader (pylibCZIrw + XML metadata) and ConfoCor3 `.raw` reader.
 - `result_processing/` — offline post-hoc analysis. Currently broken, see below.
+- `download.bat`, `install.bat`, `installer/` — the installer, see `INSTALL.md`. A third program next to
+  the two worlds: plain CPython, run in the portable Python it puts into `env\` (git-ignored),
+  importing nothing from the project. `download.bat` (online) fills `env\` with Python, wheels and
+  the cellpose model; `install.bat` (offline) installs from it, copies `ZeissAPI/` into ZEN's macro
+  folder and writes the machine's `path_config.json` there via `installer/common.py:build_path_config`.
 
 ## Adding an image-analysis algorithm
 
