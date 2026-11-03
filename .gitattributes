@@ -27,6 +27,9 @@
 ZeissAPI/**             text eol=crlf
 *.czmac                 text eol=crlf
 
+# Batch files run by cmd.exe, which misreads labels and goto in LF-only files.
+*.bat                   text eol=crlf
+
 # Microscope data and binary artefacts: never convert, never diff as text.
 *.czi                   binary
 *.raw                   binary
