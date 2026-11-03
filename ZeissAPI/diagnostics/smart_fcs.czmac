@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### where to put this file before running it ######################################
+# This is a diagnostic, kept out of the production macros in ZeissAPI/diagnostics/.
+# It imports zen_lib, so it only works from the folder main_macro.czmac runs from (ZeissAPI/ in the
+# repo, with zen_lib/ next to it). Copy it there for the run, and delete it there afterwards.
+#
+###################### what this probe answers #########################################################
+# The first step towards a smart FCS: how many kcounts/s does the detector see at laser power A, B, C?
+#
+# No FCS experiment is run and nothing is saved by ZEN. Exactly as smart_SLB_imaging does it: for every
+# power in POWERS the laser is set in memory, ONE frame of IMAGING_EXPERIMENT is acquired, its counts
+# are read straight from memory (CopyPixelsToArray) and the image is closed again.
+#
+# IMAGING_EXPERIMENT has to be an imaging experiment with the detector in PHOTON COUNTING mode, so
+# that a pixel holds photons. The count rate is then
+#
+#   kcounts/s = mean photons per pixel / pixel dwell time / 1000
+#
+# with the dwell time (PixelTime) read from the image's own metadata. That is the rate while the beam
+# sits on a pixel - the number an FCS spot of the same brightness would show. With averaging the
+# result depends on whether ZEN averages (mean) or sums the scans, so both numbers are written, next
+# to the raw LaserScanInfo and DetectorSettings metadata to decide from.
+#
+# The stage and the focus are not moved. The laser power is changed in memory only and put back at
+# the end, also after an error. The experiment is not saved - if ZEN later asks whether to save
+# changes to it, answer No.
+#
+# Output: smart_fcs_probe_YYYYMMDD_HHMMSS.json in results_path of path_config.json, plus a window
+# with the same report, also written to the log.
+
+import sys
+import json
+import time
+
+for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
+    del sys.modules[_cached]
+
+from System.IO import Path
+from System.Xml import XmlDocument
+
+from zen_lib.runtime_config import RuntimeConfig, log
+
+
+###################### settings ########################################################################
+
+IMAGING_EXPERIMENT = "FCS_photon_counting_imaging"    # imaging experiment, detector in photon counting
+LASER_LINE = "MTBLKM980LaserLine639"                  # id of the laser line, as in smart_SLB_imaging
+
+POWER_A = 0.1     # %
+POWER_B = 0.2     # %
+POWER_C = 0.4     # %
+POWERS = [POWER_A, POWER_B, POWER_C]
+
+PIXEL_STEP = 4          # every n-th pixel goes into the statistics; 1 = all, slower in IronPython
+SETTLE_SECONDS = 0.5    # pause after setting the power, before the frame
+
+
+###################### reporting #######################################################################
+
+REPORT = []
+
+
+def report(text):
+    REPORT.append(text)
+    log(text)
+
+
+###################### laser power #####################################################################
+
+
+def find_laser_intensity(experiment):
+    """
+    The Intensity parameter of the laser line, along the same path as ZenApi._laser_intensity:
+    Core.CurrentExperimentBlock.SubDimensionSetups[*].ActivatedTracks[*]
+        .SelectedDetectionModeSetup.TrackLaserSettings.ParameterCollections[Id == LASER_LINE]
+    """
+    block = experiment.Core.CurrentExperimentBlock
+
+    for setup in block.SubDimensionSetups:
+        if not hasattr(setup, "ActivatedTracks"):
+            continue
+
+        for track in setup.ActivatedTracks:
+            for collection in track.SelectedDetectionModeSetup.TrackLaserSettings.ParameterCollections:
+                if str(collection.Id) == LASER_LINE:
+                    return collection["Intensity"]
+
+    return None
+
+
+###################### metadata ########################################################################
+
+
+def children_of_first(document, xpath):
+    """
+    The child elements of the first node matching xpath, as {tag: text}, or {} when there is none.
+    Only leaf children are taken, so the dict stays readable in the JSON.
+    """
+    node = document.SelectSingleNode(xpath)
+    result = {}
+
+    if node is None:
+        return result
+
+    for child in node.ChildNodes:
+        if child.NodeType.ToString() != "Element":
+            continue
+        if child.HasChildNodes and child.FirstChild.NodeType.ToString() == "Text":
+            result[child.Name] = child.InnerText
+
+    return result
+
+
+def to_float(text):
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def frame_metadata(image):
+    """
+    PixelTime (seconds), averaging and the detector settings of the frame, from its own metadata.
+    """
+    document = XmlDocument()
+    document.LoadXml(image.Metadata.Xml)
+
+    scan = children_of_first(document, "//LaserScanInfo")
+    detector = children_of_first(document, "//Channels/Channel/DetectorSettings")
+
+    return {
+        "pixel_time_s": to_float(scan.get("PixelTime")),
+        "averaging": to_float(scan.get("Averaging")),
+        "laser_scan_info": scan,
+        "detector_settings": detector,
+    }
+
+
+###################### counts ##########################################################################
+
+
+def frame_counts(image):
+    """
+    CopyPixelsToArray takes a pixel type and returns raw bytes; for Gray16 every pixel is two bytes,
+    low byte first.
+    """
+    data = image.CopyPixelsToArray(ZenPixelType.Gray16)
+    values = sorted(data[i] + 256 * data[i + 1] for i in xrange(0, data.Length - 1, 2 * PIXEL_STEP))
+    count = len(values)
+
+    return {
+        "mean": float(sum(values)) / count,
+        "median": float(values[count // 2]),
+        "p99": float(values[int(count * 0.99)]),
+        "max": float(values[-1]),
+        "zero_fraction": float(len([v for v in values if v == 0])) / count,
+        "pixels_used": count,
+    }
+
+
+def count_rates(counts, metadata):
+    """
+    kcounts/s from the mean photons per pixel. None when the metadata has no PixelTime.
+    """
+    pixel_time = metadata["pixel_time_s"]
+    if not pixel_time:
+        return {"kcounts_per_s": None, "kcounts_per_s_if_summed": None}
+
+    rate = counts["mean"] / pixel_time / 1000.0
+    averaging = metadata["averaging"] or 1.0
+
+    return {"kcounts_per_s": rate, "kcounts_per_s_if_summed": rate / averaging}
+
+
+###################### run ############################################################################
+
+CONFIG = RuntimeConfig()
+
+report("--- smart_fcs probe ---")
+report("experiment {}, laser {}, powers {} %".format(IMAGING_EXPERIMENT, LASER_LINE, POWERS))
+
+experiment = Zen.Acquisition.Experiments.GetByName(IMAGING_EXPERIMENT)
+if experiment is None:
+    report("RESULT: experiment {} not found - stopping".format(IMAGING_EXPERIMENT))
+    raise Exception("experiment not found")
+
+experiment.SetActive()
+
+intensity = find_laser_intensity(experiment)
+if intensity is None:
+    report("RESULT: {} not found in {} - stopping".format(LASER_LINE, IMAGING_EXPERIMENT))
+    raise Exception("laser line not found")
+
+original = intensity.Value
+report("original power {} %".format(original))
+
+measurements = []
+try:
+    for power in POWERS:
+        entry = {"power_set_percent": power}
+        measurements.append(entry)
+
+        intensity.Value = str(power)
+        entry["power_read_back_percent"] = to_float(str(intensity.Value))
+        time.sleep(SETTLE_SECONDS)
+
+        started = time.time()
+        try:
+            image = Zen.Acquisition.AcquireImage(experiment)
+        except Exception as error:
+            entry["error"] = "acquisition failed: {}".format(error)
+            report("{} %: {}".format(power, entry["error"]))
+            continue
+        entry["acquisition_s"] = round(time.time() - started, 2)
+
+        try:
+            entry["counts_per_pixel"] = frame_counts(image)
+            entry["metadata"] = frame_metadata(image)
+            entry.update(count_rates(entry["counts_per_pixel"], entry["metadata"]))
+        except Exception as error:
+            entry["error"] = "reading the frame failed: {}".format(error)
+        finally:
+            image.Close()
+
+        if "error" in entry:
+            report("{} %: {}".format(power, entry["error"]))
+            continue
+
+        rate = entry["kcounts_per_s"]
+        report("{} %: mean {:.3f} photons/pixel, p99 {:.0f}, max {:.0f}, zeros {:.0%} | "
+               "dwell {} s, averaging {} | {} kcounts/s (if summed: {})".format(
+                   power, entry["counts_per_pixel"]["mean"], entry["counts_per_pixel"]["p99"],
+                   entry["counts_per_pixel"]["max"], entry["counts_per_pixel"]["zero_fraction"],
+                   entry["metadata"]["pixel_time_s"], entry["metadata"]["averaging"],
+                   "?" if rate is None else "{:.1f}".format(rate),
+                   "?" if rate is None else "{:.1f}".format(entry["kcounts_per_s_if_summed"])))
+
+finally:
+    try:
+        intensity.Value = original
+        report("restored power to {} %".format(intensity.Value))
+    except Exception as error:
+        report("RESTORE FAILED - {} - set the laser back to {} % by hand".format(error, original))
+
+record = {
+    "experiment": IMAGING_EXPERIMENT,
+    "laser_line": LASER_LINE,
+    "original_power_percent": to_float(str(original)),
+    "pixel_step": PIXEL_STEP,
+    "focus_z": Zen.Devices.Focus.ActualPosition,
+    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+    "measurements": measurements,
+}
+
+json_path = Path.Combine(CONFIG.results, "smart_fcs_probe_{}.json".format(time.strftime("%Y%m%d_%H%M%S")))
+with open(json_path, "w") as json_file:
+    json.dump(record, json_file, indent=2)
+report("written {}".format(json_path))
+
+output = ZenWindow()
+output.Initialize("smart_fcs probe")
+output.AddMultiLineTextBox("report", "Also written to the log:", "\n".join(REPORT))
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>1</Row>
+  <Column>1</Column>
+</Script>
