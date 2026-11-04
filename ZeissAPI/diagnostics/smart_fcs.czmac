@@ -6,64 +6,70 @@
   <Text>
 ###################### where to put this file before running it ######################################
 # This is a diagnostic, kept out of the production macros in ZeissAPI/diagnostics/.
-# It imports zen_lib, so it only works from the folder main_macro.czmac runs from (ZeissAPI/ in the
-# repo, with zen_lib/ next to it). Copy it there for the run, and delete it there afterwards.
+# Standalone: it does not import zen_lib and reads no config. Copy it into any folder ZEN loads
+# macros from and run it from the macro editor.
 #
 ###################### what this probe answers #########################################################
-# The first step towards a smart FCS: how many kcounts/s does the detector see at laser power A, B, C?
+# How do the count rate and the number of molecules change with the laser power?
 #
-# For every power in POWERS the laser is set in memory and FCS_EXPERIMENT is executed, the same way
-# the pipeline does it. An FCS experiment gives no image: ZEN writes .fcs and .raw files to its
-# autosave folder (zeiss_temp_file in path_config.json). Every .raw holds the photons of one
-# detector, so
+# For every power in POWERS the laser of the ACTIVE experiment is set in memory, the experiment runs
+# with its own measurement time, and the values are read live from ZEN's detector counting panel:
 #
-#   kcounts/s = photons / duration / 1000
+#   molecules = count rate / counts per molecule
 #
-# The layout of the .raw is the one IO/read_raw_corr_file.py reads: a 128 byte header, the sync rate
-# as the 4th uint32 of the settings, then one uint32 per photon, the time since the previous photon
-# in sync units. Check duration_s in the JSON against the measurement time of the experiment: if
-# they agree, the sync rate is understood correctly.
+# The route to the panel was measured with probe_fcs_live_values.czmac: the windows of ZEN hold
+# FcsDetectorCountingViewModel as a DataContext, its CountRateValues update during a measurement, and
+# Execute keeps the UI thread running, so a second thread can read while the macro waits.
 #
-# Keep the measurement short in the experiment - a few seconds are enough for a mean count rate, and
-# every power runs it once. The files stay in the autosave folder; this probe only reads them.
+# Three things that follow from that measurement:
+#   - the panel keeps showing the PREVIOUS measurement until the list empties, about 2 s after the
+#     start. A value counts only after the list has been seen empty
+#   - the first fresh value came about 3.8 s after the start, so a measurement needs several seconds
+#     more than that, for both the count rate and the counts per molecule to arrive
+#   - the panel shows one method at a time, so the macro switches it after every value it reads.
+#     If it cannot be switched, only the count rate is written
 #
-# The stage and the focus are not moved. The laser power is changed in memory only and put back at
-# the end, also after an error. The experiment is not saved - if ZEN later asks whether to save
-# changes to it, answer No.
+# Before running: select the FCS experiment and open the panel with the detector counts.
 #
-# Output: smart_fcs_probe_YYYYMMDD_HHMMSS.json in results_path of path_config.json, plus a window
-# with the same report, also written to the log.
+# The stage and the focus are not moved. The power is changed in memory only and put back at the
+# end, also after an error, and so is the method of the panel. The experiment is not saved - if ZEN
+# later asks whether to save changes to it, answer No. ZEN saves its .fcs and .raw files as usual.
+#
+# Output: smart_fcs_YYYYMMDD_HHMMSS.json on the Desktop, with every sample as the panel showed it,
+# plus a window with the summary.
 
-import sys
+import clr
+clr.AddReference("WindowsBase")
+clr.AddReference("PresentationCore")
+clr.AddReference("PresentationFramework")
+
 import json
-import struct
+import re
 import time
 
-for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
-    del sys.modules[_cached]
-
-from System import DateTime
-from System.IO import File, Path
-
-from zen_lib.runtime_config import RuntimeConfig, log
-from zen_lib.path_manager_main_macro import PathManager
+from System import Action, Enum, Environment, TimeSpan
+from System.IO import Path
+from System.Threading import Thread, ThreadStart
+from System.Windows import Application
+from System.Windows.Media import VisualTreeHelper
+from System.Windows.Threading import DispatcherOperationStatus, DispatcherPriority
 
 
 ###################### settings ########################################################################
 
-FCS_EXPERIMENT = "FCS_experiment"            # the FCS experiment, as saved in ZEN
-LASER_LINE = "MTBLKM980LaserLine639"         # id of the laser line, as in smart_SLB_imaging
+LASER_LINE = "MTBLKM980LaserLine639"    # id of the laser line, as in smart_SLB_imaging
 
 POWER_A = 0.1     # %
 POWER_B = 0.2     # %
 POWER_C = 0.4     # %
 POWERS = [POWER_A, POWER_B, POWER_C]
 
-SETTLE_SECONDS = 2.0    # pause after the experiment, the same rest the pipeline gives it
+SAMPLE_SECONDS = 1.0        # pause between readings of the panel
+SETTLE_SECONDS = 2.0        # pause after the experiment, the same rest the pipeline gives it
+UI_WAIT_SECONDS = 3.0       # how long one reading waits for the UI thread
+MAX_SAMPLES = 3600          # a stop, in case a measurement never reports its end
 
-RAW_HEADER_BYTES = 128
-RAW_SYNC_RATE_OFFSET = 92     # 64 text + 16 identifier + 3 * 4 into the settings
-RAW_CHUNK_BYTES = 4 * 1024 * 1024
+VIEW_MODEL_NAME = "FcsDetectorCountingViewModel"
 
 
 ###################### reporting #######################################################################
@@ -73,7 +79,6 @@ REPORT = []
 
 def report(text):
     REPORT.append(text)
-    log(text)
 
 
 ###################### laser power #####################################################################
@@ -81,13 +86,9 @@ def report(text):
 
 def find_laser_intensity(experiment):
     """
-    The Intensity parameter of the laser line, along the same path as ZenApi._laser_intensity:
-    Core.CurrentExperimentBlock.SubDimensionSetups[*].ActivatedTracks[*]
-        .SelectedDetectionModeSetup.TrackLaserSettings.ParameterCollections[Id == LASER_LINE]
+    The Intensity parameter of the laser line, along the same path as ZenApi._laser_intensity.
     """
-    block = experiment.Core.CurrentExperimentBlock
-
-    for setup in block.SubDimensionSetups:
+    for setup in experiment.Core.CurrentExperimentBlock.SubDimensionSetups:
         if not hasattr(setup, "ActivatedTracks"):
             continue
 
@@ -99,75 +100,166 @@ def find_laser_intensity(experiment):
     return None
 
 
-###################### count rate ######################################################################
+###################### the panel #######################################################################
 
 
-def raw_count_rate(path):
+def find_view_model():
     """
-    Photons, duration and count rate of one .raw file, read in chunks so that a long measurement
-    does not have to fit in memory as Python integers.
+    Walks the windows of ZEN for the view model of the panel. The macro runs on the UI thread, the
+    only one allowed to do this.
     """
-    with open(path, "rb") as raw_file:
-        header = raw_file.read(RAW_HEADER_BYTES)
-        sync_rate = struct.unpack("&lt;I", header[RAW_SYNC_RATE_OFFSET:RAW_SYNC_RATE_OFFSET + 4])[0]
+    for window in Application.Current.Windows:
+        stack = [window]
 
-        photons = 0
-        ticks = 0
-        while True:
-            chunk = raw_file.read(RAW_CHUNK_BYTES)
-            count = len(chunk) // 4
-            if count == 0:
-                break
-            photons += count
-            ticks += sum(struct.unpack("&lt;{}I".format(count), chunk[:count * 4]))
+        while stack:
+            element = stack.pop()
+            context = getattr(element, "DataContext", None)
 
-    duration = float(ticks) / sync_rate if sync_rate else None
+            if context is not None and context.GetType().Name == VIEW_MODEL_NAME:
+                return context
 
-    return {
-        "file": path.replace("\\", "/").split("/")[-1],
-        "photons": photons,
-        "sync_rate": sync_rate,
-        "duration_s": duration,
-        "kcounts_per_s": photons / duration / 1000.0 if duration else None,
-    }
+            for index in xrange(VisualTreeHelper.GetChildrenCount(element)):
+                stack.append(VisualTreeHelper.GetChild(element, index))
+
+    return None
 
 
-def new_raw_files(path_manager, started):
+def find_method(view_model, word):
     """
-    The .raw files of the measurement that just ended. The autosave folder keeps older measurements,
-    so a newest .fcs from before the start means this run wrote nothing.
+    The member of the DetectorCountingMethod enum with word in its name, or None.
     """
-    files = path_manager.get_latest_fcs_and_raws()
+    for method in Enum.GetValues(view_model.SelectedCountingMethod.GetType()):
+        if word in str(method).lower():
+            return method
 
-    if len(files) == 0 or File.GetLastWriteTime(files[0]) &lt; started:
-        raise Exception("no new .fcs in {} - is autosave on in the experiment?".format(
-            path_manager.zeiss_temp))
+    return None
 
-    return [path for path in files if path.lower().endswith(".raw")]
+
+def methods_to_read(view_model):
+    """
+    The methods to cycle through: count rate and counts per molecule, or only the count rate when
+    the panel cannot be switched from a macro. The switch is tried here, before any measurement.
+    """
+    count_rate = find_method(view_model, "countrate")
+    per_molecule = find_method(view_model, "molecule")
+
+    if per_molecule is None:
+        report("no counts per molecule among the methods - writing the count rate only")
+        return [count_rate]
+
+    try:
+        view_model.SelectedCountingMethod = per_molecule
+        view_model.SelectedCountingMethod = count_rate
+    except Exception as error:
+        report("the panel cannot be switched ({}) - writing the count rate only".format(error))
+        return [count_rate]
+
+    return [count_rate, per_molecule]
+
+
+def parse_value(text):
+    """
+    The number at the start of what the panel shows, such as '37.568 kHz', or None.
+    """
+    match = re.search(r"-?[0-9]+([.,][0-9]+)?", text)
+
+    return float(match.group(0).replace(",", ".")) if match else None
+
+
+###################### reading during a measurement ####################################################
+
+STATE = {"view_model": None, "methods": [], "stop": False, "fresh": False, "next": 0, "started": 0.0,
+         "samples": [], "last": {}}
+
+
+def tick():
+    """
+    One reading of the panel, on the UI thread. Takes a value only after the list has been empty once
+    in this measurement, then moves on to the next method.
+    """
+    try:
+        view_model = STATE["view_model"]
+        method = str(view_model.SelectedCountingMethod)
+        values = [str(entry.Value) for entry in view_model.CountRateValues]
+
+        STATE["samples"].append({"t_s": round(time.time() - STATE["started"], 1), "method": method,
+                                 "values": values})
+
+        if len(values) == 0:
+            STATE["fresh"] = True
+            return
+
+        number = parse_value(values[0])
+
+        if not STATE["fresh"] or number is None:
+            return
+
+        STATE["last"][method] = number
+        STATE["next"] = (STATE["next"] + 1) % len(STATE["methods"])
+        view_model.SelectedCountingMethod = STATE["methods"][STATE["next"]]
+
+    except Exception as error:
+        STATE["samples"].append({"error": str(error)})
+
+
+def reading_loop():
+    dispatcher = Application.Current.Dispatcher
+
+    for index in xrange(MAX_SAMPLES):
+        if STATE["stop"]:
+            return
+
+        operation = dispatcher.BeginInvoke(DispatcherPriority.Normal, Action(tick))
+
+        if operation.Wait(TimeSpan.FromSeconds(UI_WAIT_SECONDS)) != DispatcherOperationStatus.Completed:
+            operation.Abort()
+            STATE["samples"].append({"error": "UI thread busy"})
+
+        time.sleep(SAMPLE_SECONDS)
+
+
+def measure(experiment):
+    """
+    Runs the experiment once and reads the panel while it runs.
+    :return: tuple (dict of method name to its last fresh value, list of all samples)
+    """
+    STATE.update({"stop": False, "fresh": False, "next": 0, "started": time.time(), "samples": [], "last": {}})
+    STATE["view_model"].SelectedCountingMethod = STATE["methods"][0]
+
+    thread = Thread(ThreadStart(reading_loop))
+    thread.IsBackground = True
+    thread.Start()
+
+    try:
+        Zen.Acquisition.Execute(experiment)
+    finally:
+        STATE["stop"] = True
+        thread.Join(TimeSpan.FromSeconds(UI_WAIT_SECONDS + SAMPLE_SECONDS + 1))
+
+    return STATE["last"], STATE["samples"]
 
 
 ###################### run ############################################################################
 
-CONFIG = RuntimeConfig()
-PATHS = PathManager(CONFIG)
-
-report("--- smart_fcs probe ---")
-report("experiment {}, laser {}, powers {} %".format(FCS_EXPERIMENT, LASER_LINE, POWERS))
-
-experiment = Zen.Acquisition.Experiments.GetByName(FCS_EXPERIMENT)
-if experiment is None:
-    report("RESULT: experiment {} not found - stopping".format(FCS_EXPERIMENT))
-    raise Exception("experiment not found")
-
-experiment.SetActive()
+experiment = Zen.Acquisition.Experiments.ActiveExperiment
+report("experiment {}, laser {}, powers {} %".format(experiment.Name, LASER_LINE, POWERS))
 
 intensity = find_laser_intensity(experiment)
 if intensity is None:
-    report("RESULT: {} not found in {} - stopping".format(LASER_LINE, FCS_EXPERIMENT))
-    raise Exception("laser line not found")
+    raise Exception("{} not found in {}".format(LASER_LINE, experiment.Name))
 
-original = intensity.Value
-report("original power {} %".format(original))
+view_model = find_view_model()
+if view_model is None:
+    raise Exception("the detector counting panel was not found - open it and run the macro again")
+
+original_power = intensity.Value
+original_method = view_model.SelectedCountingMethod
+
+STATE["view_model"] = view_model
+STATE["methods"] = methods_to_read(view_model)
+
+count_rate_name = str(STATE["methods"][0])
+per_molecule_name = str(STATE["methods"][-1]) if len(STATE["methods"]) == 2 else None
 
 measurements = []
 try:
@@ -178,47 +270,53 @@ try:
         intensity.Value = str(power)
         entry["power_read_back_percent"] = float(str(intensity.Value))
 
-        started = DateTime.Now
-        started_clock = time.time()
         try:
-            Zen.Acquisition.Execute(experiment)
-            time.sleep(SETTLE_SECONDS)
-            entry["experiment_s"] = round(time.time() - started_clock, 1)
-            entry["detectors"] = [raw_count_rate(path) for path in new_raw_files(PATHS, started)]
+            last, samples = measure(experiment)
         except Exception as error:
             entry["error"] = str(error)
             report("{} %: FAILED - {}".format(power, error))
             continue
 
-        for detector in entry["detectors"]:
-            report("{} %: {} kcounts/s | {} photons in {} s | {}".format(
-                power, detector["kcounts_per_s"], detector["photons"], detector["duration_s"],
-                detector["file"]))
+        rate = last.get(count_rate_name)
+        per_molecule = last.get(per_molecule_name)
+
+        entry["count_rate_khz"] = rate
+        entry["counts_per_molecule_khz"] = per_molecule
+        entry["molecules"] = rate / per_molecule if rate and per_molecule else None
+        entry["samples"] = samples
+
+        report("{} %: count rate {} kHz, CPM {} kHz, molecules {}".format(
+            power, rate, per_molecule, entry["molecules"]))
+
+        time.sleep(SETTLE_SECONDS)
 
 finally:
     try:
-        intensity.Value = original
+        intensity.Value = original_power
         report("restored power to {} %".format(intensity.Value))
     except Exception as error:
-        report("RESTORE FAILED - {} - set the laser back to {} % by hand".format(error, original))
+        report("RESTORE FAILED - {} - set the laser back to {} % by hand".format(error, original_power))
+
+    view_model.SelectedCountingMethod = original_method
 
 record = {
-    "experiment": FCS_EXPERIMENT,
+    "experiment": experiment.Name,
     "laser_line": LASER_LINE,
-    "original_power_percent": float(str(original)),
+    "original_power_percent": float(str(original_power)),
     "focus_z": Zen.Devices.Focus.ActualPosition,
     "time": time.strftime("%Y-%m-%d %H:%M:%S"),
     "measurements": measurements,
 }
 
-json_path = Path.Combine(CONFIG.results, "smart_fcs_probe_{}.json".format(time.strftime("%Y%m%d_%H%M%S")))
+json_path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                         "smart_fcs_{}.json".format(time.strftime("%Y%m%d_%H%M%S")))
 with open(json_path, "w") as json_file:
     json.dump(record, json_file, indent=2)
 report("written {}".format(json_path))
 
 output = ZenWindow()
-output.Initialize("smart_fcs probe")
-output.AddMultiLineTextBox("report", "Also written to the log:", "\n".join(REPORT))
+output.Initialize("smart_fcs")
+output.AddMultiLineTextBox("report", "Full data in {}".format(json_path), "\n".join(REPORT))
 output.Show()
 </Text>
   <Author></Author>
