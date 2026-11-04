@@ -37,7 +37,7 @@
 # rate and then a CPM, so SCAN_EXPERIMENT should run for about 6 s.
 #
 # CPM rises with the power and bends over when the dye saturates or bleaches, so the top of the curve
-# is already past the linear range. POWER_FRACTION below 1 measures below it.
+# is already past the linear range.
 #
 # Before running: open the detector counting panel with its averaging set as wanted.
 #
@@ -87,7 +87,6 @@ NO_SIGNAL_FACTOR = 4.0      # how much the power is raised after a probe without
 NO_SIGNAL_RETRIES = 3
 EXTEND_FACTOR = 1.4         # step above the scan while CPM keeps rising
 EXTEND_STEPS = 2
-POWER_FRACTION = 1.0        # 1.0 = the top of the CPM curve; below 1 stays under it
 MIN_POINTS = 3              # fewer powers with a CPM than this and MAIN_EXPERIMENT does not run
 
 SAMPLE_SECONDS = 0.5        # pause between readings of the panel
@@ -341,12 +340,12 @@ def smooth(values):
 def choose_power(points):
     """
     :param list points: (power, CPM) of the powers that gave a value, lowest power first
-    :return: the lowest power at the top of the smoothed curve, times POWER_FRACTION
+    :return: the lowest power at the top of the smoothed curve
     """
     smoothed = smooth([cpm for power, cpm in points])
     top = smoothed.index(max(smoothed))
 
-    return clamp_power(points[top][0] * POWER_FRACTION)
+    return points[top][0]
 
 
 ###################### the search ######################################################################
@@ -488,7 +487,6 @@ record = {
     "scan_experiment": SCAN_EXPERIMENT,
     "main_experiment": MAIN_EXPERIMENT,
     "laser_line": LASER_LINE,
-    "power_fraction": POWER_FRACTION,
     "top_power_percent": top,
     "chosen_power_percent": chosen,
     "main_result": main_result,
