@@ -12,19 +12,20 @@
 ###################### what this probe answers #########################################################
 # The first step towards a smart FCS: how many kcounts/s does the detector see at laser power A, B, C?
 #
-# No FCS experiment is run and nothing is saved by ZEN. Exactly as smart_SLB_imaging does it: for every
-# power in POWERS the laser is set in memory, ONE frame of IMAGING_EXPERIMENT is acquired, its counts
-# are read straight from memory (CopyPixelsToArray) and the image is closed again.
+# For every power in POWERS the laser is set in memory and FCS_EXPERIMENT is executed, the same way
+# the pipeline does it. An FCS experiment gives no image: ZEN writes .fcs and .raw files to its
+# autosave folder (zeiss_temp_file in path_config.json). Every .raw holds the photons of one
+# detector, so
 #
-# IMAGING_EXPERIMENT has to be an imaging experiment with the detector in PHOTON COUNTING mode, so
-# that a pixel holds photons. The count rate is then
+#   kcounts/s = photons / duration / 1000
 #
-#   kcounts/s = mean photons per pixel / pixel dwell time / 1000
+# The layout of the .raw is the one IO/read_raw_corr_file.py reads: a 128 byte header, the sync rate
+# as the 4th uint32 of the settings, then one uint32 per photon, the time since the previous photon
+# in sync units. Check duration_s in the JSON against the measurement time of the experiment: if
+# they agree, the sync rate is understood correctly.
 #
-# with the dwell time (PixelTime) read from the image's own metadata. That is the rate while the beam
-# sits on a pixel - the number an FCS spot of the same brightness would show. With averaging the
-# result depends on whether ZEN averages (mean) or sums the scans, so both numbers are written, next
-# to the raw LaserScanInfo and DetectorSettings metadata to decide from.
+# Keep the measurement short in the experiment - a few seconds are enough for a mean count rate, and
+# every power runs it once. The files stay in the autosave folder; this probe only reads them.
 #
 # The stage and the focus are not moved. The laser power is changed in memory only and put back at
 # the end, also after an error. The experiment is not saved - if ZEN later asks whether to save
@@ -35,33 +36,34 @@
 
 import sys
 import json
+import struct
 import time
 
 for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
     del sys.modules[_cached]
 
-from System.IO import Path
-# System.Xml is not loaded into ZEN's IronPython by default, so the assembly has to be added
-# before anything can be imported from it
-import clr
-clr.AddReference("System.Xml")
-from System.Xml import XmlDocument
+from System import DateTime
+from System.IO import File, Path
 
 from zen_lib.runtime_config import RuntimeConfig, log
+from zen_lib.path_manager_main_macro import PathManager
 
 
 ###################### settings ########################################################################
 
-IMAGING_EXPERIMENT = "FCS_photon_counting_imaging"    # imaging experiment, detector in photon counting
-LASER_LINE = "MTBLKM980LaserLine639"                  # id of the laser line, as in smart_SLB_imaging
+FCS_EXPERIMENT = "FCS_experiment"            # the FCS experiment, as saved in ZEN
+LASER_LINE = "MTBLKM980LaserLine639"         # id of the laser line, as in smart_SLB_imaging
 
 POWER_A = 0.1     # %
 POWER_B = 0.2     # %
 POWER_C = 0.4     # %
 POWERS = [POWER_A, POWER_B, POWER_C]
 
-PIXEL_STEP = 4          # every n-th pixel goes into the statistics; 1 = all, slower in IronPython
-SETTLE_SECONDS = 0.5    # pause after setting the power, before the frame
+SETTLE_SECONDS = 2.0    # pause after the experiment, the same rest the pipeline gives it
+
+RAW_HEADER_BYTES = 128
+RAW_SYNC_RATE_OFFSET = 92     # 64 text + 16 identifier + 3 * 4 into the settings
+RAW_CHUNK_BYTES = 4 * 1024 * 1024
 
 
 ###################### reporting #######################################################################
@@ -97,107 +99,71 @@ def find_laser_intensity(experiment):
     return None
 
 
-###################### metadata ########################################################################
+###################### count rate ######################################################################
 
 
-def children_of_first(document, xpath):
+def raw_count_rate(path):
     """
-    The child elements of the first node matching xpath, as {tag: text}, or {} when there is none.
-    Only leaf children are taken, so the dict stays readable in the JSON.
+    Photons, duration and count rate of one .raw file, read in chunks so that a long measurement
+    does not have to fit in memory as Python integers.
     """
-    node = document.SelectSingleNode(xpath)
-    result = {}
+    with open(path, "rb") as raw_file:
+        header = raw_file.read(RAW_HEADER_BYTES)
+        sync_rate = struct.unpack("&lt;I", header[RAW_SYNC_RATE_OFFSET:RAW_SYNC_RATE_OFFSET + 4])[0]
 
-    if node is None:
-        return result
+        photons = 0
+        ticks = 0
+        while True:
+            chunk = raw_file.read(RAW_CHUNK_BYTES)
+            count = len(chunk) // 4
+            if count == 0:
+                break
+            photons += count
+            ticks += sum(struct.unpack("&lt;{}I".format(count), chunk[:count * 4]))
 
-    for child in node.ChildNodes:
-        if child.NodeType.ToString() != "Element":
-            continue
-        if child.HasChildNodes and child.FirstChild.NodeType.ToString() == "Text":
-            result[child.Name] = child.InnerText
-
-    return result
-
-
-def to_float(text):
-    try:
-        return float(text)
-    except (TypeError, ValueError):
-        return None
-
-
-def frame_metadata(image):
-    """
-    PixelTime (seconds), averaging and the detector settings of the frame, from its own metadata.
-    """
-    document = XmlDocument()
-    document.LoadXml(image.Metadata.Xml)
-
-    scan = children_of_first(document, "//LaserScanInfo")
-    detector = children_of_first(document, "//Channels/Channel/DetectorSettings")
+    duration = float(ticks) / sync_rate if sync_rate else None
 
     return {
-        "pixel_time_s": to_float(scan.get("PixelTime")),
-        "averaging": to_float(scan.get("Averaging")),
-        "laser_scan_info": scan,
-        "detector_settings": detector,
+        "file": path.replace("\\", "/").split("/")[-1],
+        "photons": photons,
+        "sync_rate": sync_rate,
+        "duration_s": duration,
+        "kcounts_per_s": photons / duration / 1000.0 if duration else None,
     }
 
 
-###################### counts ##########################################################################
-
-
-def frame_counts(image):
+def new_raw_files(path_manager, started):
     """
-    CopyPixelsToArray takes a pixel type and returns raw bytes; for Gray16 every pixel is two bytes,
-    low byte first.
+    The .raw files of the measurement that just ended. The autosave folder keeps older measurements,
+    so a newest .fcs from before the start means this run wrote nothing.
     """
-    data = image.CopyPixelsToArray(ZenPixelType.Gray16)
-    values = sorted(data[i] + 256 * data[i + 1] for i in xrange(0, data.Length - 1, 2 * PIXEL_STEP))
-    count = len(values)
+    files = path_manager.get_latest_fcs_and_raws()
 
-    return {
-        "mean": float(sum(values)) / count,
-        "median": float(values[count // 2]),
-        "p99": float(values[int(count * 0.99)]),
-        "max": float(values[-1]),
-        "zero_fraction": float(len([v for v in values if v == 0])) / count,
-        "pixels_used": count,
-    }
+    if len(files) == 0 or File.GetLastWriteTime(files[0]) &lt; started:
+        raise Exception("no new .fcs in {} - is autosave on in the experiment?".format(
+            path_manager.zeiss_temp))
 
-
-def count_rates(counts, metadata):
-    """
-    kcounts/s from the mean photons per pixel. None when the metadata has no PixelTime.
-    """
-    pixel_time = metadata["pixel_time_s"]
-    if not pixel_time:
-        return {"kcounts_per_s": None, "kcounts_per_s_if_summed": None}
-
-    rate = counts["mean"] / pixel_time / 1000.0
-    averaging = metadata["averaging"] or 1.0
-
-    return {"kcounts_per_s": rate, "kcounts_per_s_if_summed": rate / averaging}
+    return [path for path in files if path.lower().endswith(".raw")]
 
 
 ###################### run ############################################################################
 
 CONFIG = RuntimeConfig()
+PATHS = PathManager(CONFIG)
 
 report("--- smart_fcs probe ---")
-report("experiment {}, laser {}, powers {} %".format(IMAGING_EXPERIMENT, LASER_LINE, POWERS))
+report("experiment {}, laser {}, powers {} %".format(FCS_EXPERIMENT, LASER_LINE, POWERS))
 
-experiment = Zen.Acquisition.Experiments.GetByName(IMAGING_EXPERIMENT)
+experiment = Zen.Acquisition.Experiments.GetByName(FCS_EXPERIMENT)
 if experiment is None:
-    report("RESULT: experiment {} not found - stopping".format(IMAGING_EXPERIMENT))
+    report("RESULT: experiment {} not found - stopping".format(FCS_EXPERIMENT))
     raise Exception("experiment not found")
 
 experiment.SetActive()
 
 intensity = find_laser_intensity(experiment)
 if intensity is None:
-    report("RESULT: {} not found in {} - stopping".format(LASER_LINE, IMAGING_EXPERIMENT))
+    report("RESULT: {} not found in {} - stopping".format(LASER_LINE, FCS_EXPERIMENT))
     raise Exception("laser line not found")
 
 original = intensity.Value
@@ -210,39 +176,24 @@ try:
         measurements.append(entry)
 
         intensity.Value = str(power)
-        entry["power_read_back_percent"] = to_float(str(intensity.Value))
-        time.sleep(SETTLE_SECONDS)
+        entry["power_read_back_percent"] = float(str(intensity.Value))
 
-        started = time.time()
+        started = DateTime.Now
+        started_clock = time.time()
         try:
-            image = Zen.Acquisition.AcquireImage(experiment)
+            Zen.Acquisition.Execute(experiment)
+            time.sleep(SETTLE_SECONDS)
+            entry["experiment_s"] = round(time.time() - started_clock, 1)
+            entry["detectors"] = [raw_count_rate(path) for path in new_raw_files(PATHS, started)]
         except Exception as error:
-            entry["error"] = "acquisition failed: {}".format(error)
-            report("{} %: {}".format(power, entry["error"]))
-            continue
-        entry["acquisition_s"] = round(time.time() - started, 2)
-
-        try:
-            entry["counts_per_pixel"] = frame_counts(image)
-            entry["metadata"] = frame_metadata(image)
-            entry.update(count_rates(entry["counts_per_pixel"], entry["metadata"]))
-        except Exception as error:
-            entry["error"] = "reading the frame failed: {}".format(error)
-        finally:
-            image.Close()
-
-        if "error" in entry:
-            report("{} %: {}".format(power, entry["error"]))
+            entry["error"] = str(error)
+            report("{} %: FAILED - {}".format(power, error))
             continue
 
-        rate = entry["kcounts_per_s"]
-        report("{} %: mean {:.3f} photons/pixel, p99 {:.0f}, max {:.0f}, zeros {:.0%} | "
-               "dwell {} s, averaging {} | {} kcounts/s (if summed: {})".format(
-                   power, entry["counts_per_pixel"]["mean"], entry["counts_per_pixel"]["p99"],
-                   entry["counts_per_pixel"]["max"], entry["counts_per_pixel"]["zero_fraction"],
-                   entry["metadata"]["pixel_time_s"], entry["metadata"]["averaging"],
-                   "?" if rate is None else "{:.1f}".format(rate),
-                   "?" if rate is None else "{:.1f}".format(entry["kcounts_per_s_if_summed"])))
+        for detector in entry["detectors"]:
+            report("{} %: {} kcounts/s | {} photons in {} s | {}".format(
+                power, detector["kcounts_per_s"], detector["photons"], detector["duration_s"],
+                detector["file"]))
 
 finally:
     try:
@@ -252,10 +203,9 @@ finally:
         report("RESTORE FAILED - {} - set the laser back to {} % by hand".format(error, original))
 
 record = {
-    "experiment": IMAGING_EXPERIMENT,
+    "experiment": FCS_EXPERIMENT,
     "laser_line": LASER_LINE,
-    "original_power_percent": to_float(str(original)),
-    "pixel_step": PIXEL_STEP,
+    "original_power_percent": float(str(original)),
     "focus_z": Zen.Devices.Focus.ActualPosition,
     "time": time.strftime("%Y-%m-%d %H:%M:%S"),
     "measurements": measurements,
