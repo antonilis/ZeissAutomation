@@ -7,7 +7,8 @@
 ###################### where to put this file before running it ######################################
 # This is a diagnostic, kept out of the production macros in ZeissAPI/diagnostics/.
 # Standalone: it does not import zen_lib and reads no config. Copy it into any folder ZEN loads
-# macros from and run it from the macro editor. The report is written to the Windows temp folder.
+# macros from and run it from the macro editor. The full report is written to the Desktop; the
+# window shows only its first 400 lines.
 #
 ###################### what this probe answers #########################################################
 # Is there anything in ZEN a macro could read the live count rate of the FCS detector from?
@@ -29,7 +30,7 @@
 import re
 import time
 
-from System import AppDomain
+from System import AppDomain, Environment
 from System.IO import Directory, File, Path, SearchOption
 from System.Reflection import BindingFlags
 
@@ -176,12 +177,14 @@ for title, step in (("1. types and members in loaded Zeiss assemblies", scan_ass
     except Exception as error:
         note("FAILED: {}".format(error))
 
-report_path = Path.Combine(Path.GetTempPath(), "probe_fcs_live_counts_{}.txt".format(time.strftime("%Y%m%d_%H%M%S")))
+report_path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                           "probe_fcs_live_counts_{}.txt".format(time.strftime("%Y%m%d_%H%M%S")))
 File.WriteAllText(report_path, "\n".join(REPORT))
 
 output = ZenWindow()
 output.Initialize("FCS live counts probe")
-output.AddMultiLineTextBox("report", "Written to {}".format(report_path), "\n".join(REPORT[:400]))
+output.AddMultiLineTextBox("report", "First 400 lines of {} lines; full report: {}".format(len(REPORT), report_path),
+                           "\n".join(REPORT[:400]))
 output.Show()
 </Text>
   <Author></Author>
