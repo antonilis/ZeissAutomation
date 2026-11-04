@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### where to put this file before running it ######################################
+# This is a diagnostic, kept out of the production macros in ZeissAPI/diagnostics/.
+# Standalone: it does not import zen_lib and reads no config. Copy it into any folder ZEN loads
+# macros from and run it from the macro editor. The full report is written to the Desktop.
+#
+###################### what this probe answers #########################################################
+# Can a macro read the live count rate ZEN shows during an FCS measurement?
+#
+# probe_fcs_live_counts.czmac found FcsDetectorCountingViewModel.CountRateValues in
+# Zeiss.Micro.LSM.FCS.UI, but no way for a macro to reach a live instance. WPF offers one: the panel
+# on screen holds that view model as its DataContext. So this probe
+#
+#   1. looks through the ZEN windows for it, before the measurement
+#   2. runs the ACTIVE experiment, exactly as the pipeline does, and repeats the search and the
+#      reading every SAMPLE_SECONDS from a second thread, because Execute blocks the macro
+#   3. looks once more after the measurement
+#
+# Before running: select the FCS experiment, shorten its measurement time and open the panel with
+# the detector counts, so that the control exists. The panel may be created only when it is shown.
+#
+# Reading the report:
+#   "view model found" with changing values   the live stream can be read from a macro
+#   "UI thread busy" on every sample          Execute blocks the UI thread, so a second thread cannot
+#                                             read during the measurement
+#   "not found" and an empty list of FCS      the panel was not open, or the windows are not WPF
+#   types
+#
+# SAFETY: the experiment runs with its own settings, like pressing Start, so the laser is on and ZEN
+# saves its .fcs and .raw files as usual. Nothing moves, nothing is changed, the panel is only read.
+
+import clr
+clr.AddReference("WindowsBase")
+clr.AddReference("PresentationCore")
+clr.AddReference("PresentationFramework")
+
+import time
+
+from System import Action, Environment, TimeSpan
+from System.IO import File, Path
+from System.Threading import Thread, ThreadStart
+from System.Windows import Application
+from System.Windows.Media import VisualTreeHelper
+from System.Windows.Threading import DispatcherOperationStatus, DispatcherPriority
+
+
+###################### settings ########################################################################
+
+SAMPLE_SECONDS = 1.0        # pause between samples during the measurement
+MAX_SAMPLES = 600           # a stop, in case the measurement never reports its end
+UI_WAIT_SECONDS = 3.0       # how long one sample waits for the UI thread
+MAX_NODES = 300000          # a stop for the walk through the windows
+
+VIEW_MODEL_NAME = "FcsDetectorCountingViewModel"
+CONTROL_NAME = "FcsDetectorCountingControl"
+
+
+###################### reporting #######################################################################
+
+REPORT = []
+STARTED = time.time()
+
+
+def note(text):
+    REPORT.append("{:7.1f} s  {}".format(time.time() - STARTED, text))
+
+
+###################### finding the panel ###############################################################
+
+
+def type_name(item):
+    return item.GetType().Name
+
+
+def walk_window(window, found):
+    """
+    Walks the visual tree of one window. Remembers the view model and every type with Fcs in its name,
+    which shows what was on screen when the view model itself is not there.
+    """
+    stack = [window]
+    nodes = 0
+
+    while stack:
+        element = stack.pop()
+        nodes += 1
+
+        if nodes == MAX_NODES:
+            found["truncated"] = True
+            break
+
+        name = type_name(element)
+        if "Fcs" in name:
+            found["types"].add(name)
+
+        context = getattr(element, "DataContext", None)
+        if context is not None:
+            context_name = type_name(context)
+            if "Fcs" in context_name:
+                found["types"].add(context_name)
+            if context_name == VIEW_MODEL_NAME or name == CONTROL_NAME:
+                found["view_model"] = context
+
+        for index in xrange(VisualTreeHelper.GetChildrenCount(element)):
+            stack.append(VisualTreeHelper.GetChild(element, index))
+
+    return nodes
+
+
+def find_view_model():
+    """
+    Runs on the UI thread, the only one allowed to touch the windows.
+    """
+    found = {"view_model": None, "types": set(), "truncated": False}
+    nodes = 0
+
+    for window in Application.Current.Windows:
+        nodes += walk_window(window, found)
+
+    found["nodes"] = nodes
+    return found
+
+
+def read_view_model(view_model):
+    """
+    Runs on the UI thread as well. The name of the view model is checked by the caller, so a
+    DataContext of another type shows up here as a missing member, not as wrong numbers.
+    """
+    values = [str(entry.Value) for entry in view_model.CountRateValues]
+    return "{} | method {}".format(values, view_model.SelectedCountingMethod)
+
+
+###################### sampling ########################################################################
+
+STATE = {"view_model": None, "stop": False}
+
+
+def sample_on_ui_thread(label):
+    try:
+        if STATE["view_model"] is None:
+            found = find_view_model()
+            note("{}: searched {} elements, view model {}, FCS types {}{}".format(
+                label, found["nodes"], "found" if found["view_model"] is not None else "not found",
+                sorted(found["types"]), " (walk cut short)" if found["truncated"] else ""))
+            STATE["view_model"] = found["view_model"]
+
+        if STATE["view_model"] is not None:
+            note("{}: {} = {}".format(label, type_name(STATE["view_model"]), read_view_model(STATE["view_model"])))
+
+    except Exception as error:
+        note("{}: FAILED - {}".format(label, error))
+
+
+def sample(label):
+    application = Application.Current
+
+    if application is None:
+        note("{}: Application.Current is None - ZEN windows are not reachable this way".format(label))
+        return
+
+    dispatcher = application.Dispatcher
+
+    if dispatcher.CheckAccess():
+        sample_on_ui_thread(label)
+        return
+
+    operation = dispatcher.BeginInvoke(DispatcherPriority.Normal, Action(lambda: sample_on_ui_thread(label)))
+
+    if operation.Wait(TimeSpan.FromSeconds(UI_WAIT_SECONDS)) != DispatcherOperationStatus.Completed:
+        operation.Abort()
+        note("{}: UI thread busy for {} s".format(label, UI_WAIT_SECONDS))
+
+
+def sampling_loop():
+    try:
+        for index in xrange(MAX_SAMPLES):
+            if STATE["stop"]:
+                return
+            sample("during")
+            time.sleep(SAMPLE_SECONDS)
+    except Exception as error:
+        note("sampling thread FAILED - {}".format(error))
+
+
+###################### run ############################################################################
+
+experiment = Zen.Acquisition.Experiments.ActiveExperiment
+note("active experiment: {}".format(experiment.Name))
+
+note("macro on the UI thread: {}".format(
+    Application.Current is not None and Application.Current.Dispatcher.CheckAccess()))
+
+sample("before")
+
+thread = Thread(ThreadStart(sampling_loop))
+thread.IsBackground = True
+thread.Start()
+
+try:
+    note("Execute started")
+    Zen.Acquisition.Execute(experiment)
+    note("Execute finished")
+except Exception as error:
+    note("Execute FAILED - {}".format(error))
+finally:
+    STATE["stop"] = True
+    thread.Join(TimeSpan.FromSeconds(UI_WAIT_SECONDS + SAMPLE_SECONDS + 1))
+
+sample("after")
+
+report_path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                           "probe_fcs_live_values_{}.txt".format(time.strftime("%Y%m%d_%H%M%S")))
+File.WriteAllText(report_path, "\n".join(REPORT))
+
+output = ZenWindow()
+output.Initialize("FCS live values probe")
+output.AddMultiLineTextBox("report", "First 400 of {} lines; full report: {}".format(len(REPORT), report_path),
+                           "\n".join(REPORT[:400]))
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>1</Row>
+  <Column>1</Column>
+</Script>
