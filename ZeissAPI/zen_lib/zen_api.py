@@ -262,6 +262,39 @@ class ZenApi:
 
         return float(intensity.Value)
 
+    ###################### FCS count rate ##############################################################
+
+    def fcs_count_rate(self, experiment_name):
+        """
+        Runs an FCS experiment and reads its count rate live from ZEN's detector counting panel, which
+        has to be open. Measured with diagnostics/probe_fcs_live_values.czmac, see zen_lib/fcs_panel.py.
+        The panel is put back on the method it showed. fcs_panel is imported here rather than at the
+        top so that the WPF assemblies it needs are loaded only by the plugins that read the panel.
+        :param str experiment_name: name of the experiment as saved in ZEN
+        :return: float the last count rate of the measurement in kHz, or None when the panel gave none
+        :raise ValueError: when the panel is not open
+        """
+        from zen_lib import fcs_panel
+
+        view_model = fcs_panel.find_view_model()
+
+        if view_model is None:
+            raise ValueError("the detector counting panel is not open")
+
+        experiment = self.zen.Acquisition.Experiments.GetByName(experiment_name)
+        original_method = view_model.SelectedCountingMethod
+        view_model.SelectedCountingMethod = fcs_panel.count_rate_method(view_model)
+
+        try:
+            count_rate = fcs_panel.CountRateReader(view_model).read_during(
+                lambda: self.zen.Acquisition.Execute(experiment))
+        finally:
+            view_model.SelectedCountingMethod = original_method
+
+        time.sleep(2)  # Rest for hardware adjustment
+
+        return count_rate
+
     ###################### pixels ######################################################################
 
     def frame_statistics(self, experiment_name, pixel_step):

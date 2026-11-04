@@ -187,6 +187,22 @@ Two routes that look right and do **not** reach the laser:
 `Core` is the unversioned internal layer (see the README), so this path can move in a ZEN update.
 If `laser_intensity` returns `None` after one, dump `experiment.Core` again along the XML path above.
 
+### FCS count rate
+
+There is no scripting API for it, and the FCS assemblies (`Zeiss.Micro.LSM.FCS*`) are not reachable
+from `Zen`, so `dump_zen_api.czmac` never shows them. `diagnostics/probe_fcs_live_counts.czmac` lists
+them. The live values are read from the detector counting panel on screen: its `DataContext` in the
+WPF visual tree is an `FcsDetectorCountingViewModel`, with `CountRateValues` (entries with a string
+`Value`, such as `37.568 kHz`) and a settable `SelectedCountingMethod`. `ZenApi.fcs_count_rate` does
+this; the details are in `zen_lib/fcs_panel.py`. Measured on an LSM 880, ZEN 2 blue:
+
+- `Execute` keeps the UI thread running, so a second thread can read while the macro waits.
+- The panel shows the previous measurement until its list empties, about 2 s after the start.
+- The first fresh value comes about 3.8 s after the start.
+- Right after a large drop in power the panel showed the old level for over a second, so take the
+  last value of a measurement, not the first.
+- Counts per molecule needs the panel's averaging set, or it jumps around, down to negative values.
+
 ### AutoSave
 
 Controls what ZEN writes to disk on its own during the run. Relevant when a macro also wants to

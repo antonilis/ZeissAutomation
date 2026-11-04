@@ -122,6 +122,9 @@ If you need a new path, add a key to `path_config.json` and surface it as an att
   its own folder.
 - `ZeissAPI/zen_lib/path_manager_main_macro.py` — every result path and filename is built here. Do not build paths inline.
 - `ZeissAPI/zen_lib/execute_python.py` — the subprocess bridge.
+- `ZeissAPI/zen_lib/fcs_panel.py` — reads the live FCS count rate from ZEN's detector counting panel
+  through WPF, because no scripting API offers it. Used only through `ZenApi.fcs_count_rate`, which
+  imports it on demand so that the WPF assemblies never load for a run that does not need them.
 - `ZeissAPI/config/` — machine paths (`path_config.json`), named analysis presets
   (`processing_config.json`) and named object selection presets (`selection_config.json`).
 - `data_processing/main_processor.py` — World B entry point.
