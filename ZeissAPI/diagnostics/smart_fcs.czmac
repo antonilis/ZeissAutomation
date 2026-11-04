@@ -41,6 +41,10 @@ for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.st
     del sys.modules[_cached]
 
 from System.IO import Path
+# System.Xml is not loaded into ZEN's IronPython by default, so the assembly has to be added
+# before anything can be imported from it
+import clr
+clr.AddReference("System.Xml")
 from System.Xml import XmlDocument
 
 from zen_lib.runtime_config import RuntimeConfig, log
