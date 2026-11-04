@@ -9,34 +9,36 @@
 # Standalone: it does not import zen_lib and reads no config. Copy it into any folder ZEN loads
 # macros from and run it from the macro editor.
 #
-###################### what this probe answers #########################################################
-# How do the count rate and the number of molecules change with the laser power?
+###################### what this macro does ############################################################
+# Chooses the laser power of an FCS measurement from the sample itself:
 #
-# For every power in POWERS the laser of the ACTIVE experiment is set in memory, the experiment runs
-# with its own measurement time, and the values are read live from ZEN's detector counting panel:
+#   1. SCAN_EXPERIMENT, a short FCS measurement, runs once for every power in POWERS, lowest first,
+#      while the counts per molecule (CPM) are read live from ZEN's detector counting panel
+#   2. the CPM curve is median filtered over 3 neighbouring powers and its highest point is taken
+#   3. MAIN_EXPERIMENT, the normal measurement, runs once at that power times POWER_FRACTION.
+#      Nothing is read during it; ZEN saves its .fcs and .raw files as usual
 #
-#   molecules = count rate / counts per molecule
+# The scan and the measurement are two experiments because the measurement time then stays a setting
+# of each experiment, and the macro needs no call that has not run on the instrument.
 #
-# The route to the panel was measured with probe_fcs_live_values.czmac: the windows of ZEN hold
-# FcsDetectorCountingViewModel as a DataContext, its CountRateValues update during a measurement, and
-# Execute keeps the UI thread running, so a second thread can read while the macro waits.
+# The route to the panel was measured with probe_fcs_live_values.czmac and smart_fcs runs before this
+# one: the windows of ZEN hold FcsDetectorCountingViewModel as a DataContext, Execute keeps the UI
+# thread running so a second thread can read, and the panel's method can be set from a macro.
+# The panel keeps showing the PREVIOUS measurement until its list empties, so a value counts only
+# after the list has been seen empty. The first fresh value came about 3.8 s after the start, so
+# SCAN_EXPERIMENT must be long enough to deliver one. A power that gives none is left out of the curve.
 #
-# Three things that follow from that measurement:
-#   - the panel keeps showing the PREVIOUS measurement until the list empties, about 2 s after the
-#     start. A value counts only after the list has been seen empty
-#   - the first fresh value came about 3.8 s after the start, so a measurement needs several seconds
-#     more than that, for both the count rate and the counts per molecule to arrive
-#   - the panel shows one method at a time, so the macro switches it after every value it reads.
-#     If it cannot be switched, only the count rate is written
+# CPM rises with the power and bends over when the dye saturates or bleaches, so the top of the curve
+# is already past the linear range. POWER_FRACTION below 1 measures below it.
 #
-# Before running: select the FCS experiment and open the panel with the detector counts.
+# Before running: open the detector counting panel with its averaging set as wanted.
 #
-# The stage and the focus are not moved. The power is changed in memory only and put back at the
-# end, also after an error, and so is the method of the panel. The experiment is not saved - if ZEN
-# later asks whether to save changes to it, answer No. ZEN saves its .fcs and .raw files as usual.
+# The stage and the focus are not moved. Powers are changed in memory only and put back at the end,
+# also after an error, and so is the method of the panel. The experiments are not saved - if ZEN later
+# asks whether to save changes to them, answer No.
 #
 # Output: smart_fcs_YYYYMMDD_HHMMSS.json on the Desktop, with every sample as the panel showed it,
-# plus a window with the summary.
+# plus a window with the curve and the chosen power.
 
 import clr
 clr.AddReference("WindowsBase")
@@ -57,15 +59,16 @@ from System.Windows.Threading import DispatcherOperationStatus, DispatcherPriori
 
 ###################### settings ########################################################################
 
-LASER_LINE = "MTBLKM980LaserLine639"    # id of the laser line, as in smart_SLB_imaging
+SCAN_EXPERIMENT = "FCS_scan"                # short FCS measurement, as saved in ZEN
+MAIN_EXPERIMENT = "FCS_main"                # the normal FCS measurement, as saved in ZEN
+LASER_LINE = "MTBLKM980LaserLine639"        # id of the laser line, as in smart_SLB_imaging
 
-POWER_A = 0.1     # %
-POWER_B = 0.2     # %
-POWER_C = 0.4     # %
-POWERS = [POWER_A, POWER_B, POWER_C]
+POWERS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0, 1.3, 1.6, 2.0]     # %, lowest first
+POWER_FRACTION = 1.0        # 1.0 = the top of the CPM curve; below 1 stays under it
+MIN_POINTS = 3              # fewer powers with a value than this and MAIN_EXPERIMENT does not run
 
-SAMPLE_SECONDS = 1.0        # pause between readings of the panel
-SETTLE_SECONDS = 2.0        # pause after the experiment, the same rest the pipeline gives it
+SAMPLE_SECONDS = 0.5        # pause between readings of the panel
+SETTLE_SECONDS = 2.0        # pause after switching or running an experiment, as in the pipeline
 UI_WAIT_SECONDS = 3.0       # how long one reading waits for the UI thread
 MAX_SAMPLES = 3600          # a stop, in case a measurement never reports its end
 
@@ -86,7 +89,8 @@ def report(text):
 
 def find_laser_intensity(experiment):
     """
-    The Intensity parameter of the laser line, along the same path as ZenApi._laser_intensity.
+    The Intensity parameter of the laser line, along the same path as ZenApi._laser_intensity, and
+    like there looked up again on every use.
     """
     for setup in experiment.Core.CurrentExperimentBlock.SubDimensionSetups:
         if not hasattr(setup, "ActivatedTracks"):
@@ -97,7 +101,18 @@ def find_laser_intensity(experiment):
                 if str(collection.Id) == LASER_LINE:
                     return collection["Intensity"]
 
-    return None
+    raise Exception("{} not found in {}".format(LASER_LINE, experiment.Name))
+
+
+def activate(name):
+    experiment = Zen.Acquisition.Experiments.GetByName(name)
+
+    if experiment is None:
+        raise Exception("experiment {} not found".format(name))
+
+    experiment.SetActive()
+    time.sleep(SETTLE_SECONDS)
+    return experiment
 
 
 ###################### the panel #######################################################################
@@ -135,31 +150,9 @@ def find_method(view_model, word):
     return None
 
 
-def methods_to_read(view_model):
-    """
-    The methods to cycle through: count rate and counts per molecule, or only the count rate when
-    the panel cannot be switched from a macro. The switch is tried here, before any measurement.
-    """
-    count_rate = find_method(view_model, "countrate")
-    per_molecule = find_method(view_model, "molecule")
-
-    if per_molecule is None:
-        report("no counts per molecule among the methods - writing the count rate only")
-        return [count_rate]
-
-    try:
-        view_model.SelectedCountingMethod = per_molecule
-        view_model.SelectedCountingMethod = count_rate
-    except Exception as error:
-        report("the panel cannot be switched ({}) - writing the count rate only".format(error))
-        return [count_rate]
-
-    return [count_rate, per_molecule]
-
-
 def parse_value(text):
     """
-    The number at the start of what the panel shows, such as '37.568 kHz', or None.
+    The number at the start of what the panel shows, such as '3.671 kHz', or None.
     """
     match = re.search(r"-?[0-9]+([.,][0-9]+)?", text)
 
@@ -168,22 +161,18 @@ def parse_value(text):
 
 ###################### reading during a measurement ####################################################
 
-STATE = {"view_model": None, "methods": [], "stop": False, "fresh": False, "next": 0, "started": 0.0,
-         "samples": [], "last": {}}
+STATE = {"view_model": None, "stop": False, "fresh": False, "started": 0.0, "samples": [], "last": None}
 
 
 def tick():
     """
-    One reading of the panel, on the UI thread. Takes a value only after the list has been empty once
-    in this measurement, then moves on to the next method.
+    One reading of the panel, on the UI thread. A value counts only after the list has been empty
+    once in this measurement; before that it belongs to the previous one.
     """
     try:
-        view_model = STATE["view_model"]
-        method = str(view_model.SelectedCountingMethod)
-        values = [str(entry.Value) for entry in view_model.CountRateValues]
+        values = [str(entry.Value) for entry in STATE["view_model"].CountRateValues]
 
-        STATE["samples"].append({"t_s": round(time.time() - STATE["started"], 1), "method": method,
-                                 "values": values})
+        STATE["samples"].append({"t_s": round(time.time() - STATE["started"], 1), "values": values})
 
         if len(values) == 0:
             STATE["fresh"] = True
@@ -191,12 +180,8 @@ def tick():
 
         number = parse_value(values[0])
 
-        if not STATE["fresh"] or number is None:
-            return
-
-        STATE["last"][method] = number
-        STATE["next"] = (STATE["next"] + 1) % len(STATE["methods"])
-        view_model.SelectedCountingMethod = STATE["methods"][STATE["next"]]
+        if STATE["fresh"] and number is not None:
+            STATE["last"] = number
 
     except Exception as error:
         STATE["samples"].append({"error": str(error)})
@@ -218,13 +203,12 @@ def reading_loop():
         time.sleep(SAMPLE_SECONDS)
 
 
-def measure(experiment):
+def measure_cpm(experiment):
     """
     Runs the experiment once and reads the panel while it runs.
-    :return: tuple (dict of method name to its last fresh value, list of all samples)
+    :return: tuple (the last fresh CPM or None, list of all samples)
     """
-    STATE.update({"stop": False, "fresh": False, "next": 0, "started": time.time(), "samples": [], "last": {}})
-    STATE["view_model"].SelectedCountingMethod = STATE["methods"][0]
+    STATE.update({"stop": False, "fresh": False, "started": time.time(), "samples": [], "last": None})
 
     thread = Thread(ThreadStart(reading_loop))
     thread.IsBackground = True
@@ -239,70 +223,126 @@ def measure(experiment):
     return STATE["last"], STATE["samples"]
 
 
+###################### choosing the power ##############################################################
+
+
+def smooth(values):
+    """
+    Median of every value and its neighbours, so that one noisy short measurement cannot win alone,
+    which a mean does not prevent. At the two ends, with one neighbour, the lower of the two.
+    """
+    result = []
+
+    for index in range(len(values)):
+        window = sorted(values[max(index - 1, 0):index + 2])
+        result.append(window[(len(window) - 1) // 2])
+
+    return result
+
+
+def choose_power(points):
+    """
+    :param list points: (power, CPM) of the powers that gave a value, lowest power first
+    :return: the lowest power at the top of the smoothed curve, times POWER_FRACTION
+    """
+    smoothed = smooth([cpm for power, cpm in points])
+    top = smoothed.index(max(smoothed))
+
+    return round(points[top][0] * POWER_FRACTION, 4)
+
+
 ###################### run ############################################################################
 
-experiment = Zen.Acquisition.Experiments.ActiveExperiment
-report("experiment {}, laser {}, powers {} %".format(experiment.Name, LASER_LINE, POWERS))
-
-intensity = find_laser_intensity(experiment)
-if intensity is None:
-    raise Exception("{} not found in {}".format(LASER_LINE, experiment.Name))
+scan = activate(SCAN_EXPERIMENT)
+original_scan_power = find_laser_intensity(scan).Value
 
 view_model = find_view_model()
 if view_model is None:
     raise Exception("the detector counting panel was not found - open it and run the macro again")
 
-original_power = intensity.Value
+per_molecule = find_method(view_model, "molecule")
+if per_molecule is None:
+    raise Exception("the panel has no counts per molecule method")
+
 original_method = view_model.SelectedCountingMethod
-
+view_model.SelectedCountingMethod = per_molecule
 STATE["view_model"] = view_model
-STATE["methods"] = methods_to_read(view_model)
 
-count_rate_name = str(STATE["methods"][0])
-per_molecule_name = str(STATE["methods"][-1]) if len(STATE["methods"]) == 2 else None
+report("scan {}, main {}, laser {}".format(SCAN_EXPERIMENT, MAIN_EXPERIMENT, LASER_LINE))
 
 measurements = []
+points = []
+chosen = None
+main_result = None
+
 try:
     for power in POWERS:
-        entry = {"power_set_percent": power}
+        entry = {"power_percent": power}
         measurements.append(entry)
 
-        intensity.Value = str(power)
-        entry["power_read_back_percent"] = float(str(intensity.Value))
+        find_laser_intensity(scan).Value = str(power)
 
         try:
-            last, samples = measure(experiment)
+            cpm, samples = measure_cpm(scan)
         except Exception as error:
             entry["error"] = str(error)
             report("{} %: FAILED - {}".format(power, error))
             continue
 
-        rate = last.get(count_rate_name)
-        per_molecule = last.get(per_molecule_name)
-
-        entry["count_rate_khz"] = rate
-        entry["counts_per_molecule_khz"] = per_molecule
-        entry["molecules"] = rate / per_molecule if rate and per_molecule else None
+        entry["cpm_khz"] = cpm
         entry["samples"] = samples
+        report("{} %: CPM {} kHz".format(power, cpm))
 
-        report("{} %: count rate {} kHz, CPM {} kHz, molecules {}".format(
-            power, rate, per_molecule, entry["molecules"]))
+        if cpm is not None:
+            points.append((power, cpm))
 
         time.sleep(SETTLE_SECONDS)
 
 finally:
-    try:
-        intensity.Value = original_power
-        report("restored power to {} %".format(intensity.Value))
-    except Exception as error:
-        report("RESTORE FAILED - {} - set the laser back to {} % by hand".format(error, original_power))
-
     view_model.SelectedCountingMethod = original_method
 
+    try:
+        find_laser_intensity(scan).Value = original_scan_power
+    except Exception as error:
+        report("RESTORE FAILED - {} - set {} back to {} % by hand".format(error, SCAN_EXPERIMENT, original_scan_power))
+
+if len(points) &gt;= MIN_POINTS:
+    chosen = choose_power(points)
+    report("chosen power {} %".format(chosen))
+
+    if points[-1][1] == max(cpm for power, cpm in points):
+        report("WARNING: CPM was still rising at {} % - the curve did not bend, the list may end too low".format(
+            points[-1][0]))
+
+    main = activate(MAIN_EXPERIMENT)
+    original_main_power = find_laser_intensity(main).Value
+
+    try:
+        find_laser_intensity(main).Value = str(chosen)
+        Zen.Acquisition.Execute(main)
+        time.sleep(SETTLE_SECONDS)
+        main_result = "finished"
+        report("{} finished at {} %".format(MAIN_EXPERIMENT, chosen))
+    except Exception as error:
+        main_result = str(error)
+        report("{} FAILED - {}".format(MAIN_EXPERIMENT, error))
+    finally:
+        try:
+            find_laser_intensity(main).Value = original_main_power
+        except Exception as error:
+            report("RESTORE FAILED - {} - set {} back to {} % by hand".format(error, MAIN_EXPERIMENT, original_main_power))
+
+else:
+    report("only {} powers gave a CPM - {} was NOT run. Is {} long enough?".format(
+        len(points), MAIN_EXPERIMENT, SCAN_EXPERIMENT))
+
 record = {
-    "experiment": experiment.Name,
+    "scan_experiment": SCAN_EXPERIMENT,
+    "main_experiment": MAIN_EXPERIMENT,
     "laser_line": LASER_LINE,
-    "original_power_percent": float(str(original_power)),
+    "power_fraction": POWER_FRACTION,
+    "chosen_power_percent": chosen,
+    "main_result": main_result,
     "focus_z": Zen.Devices.Focus.ActualPosition,
     "time": time.strftime("%Y-%m-%d %H:%M:%S"),
     "measurements": measurements,
