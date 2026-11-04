@@ -10,26 +10,31 @@
 # macros from and run it from the macro editor.
 #
 ###################### what this macro does ############################################################
-# Chooses the laser power of an FCS measurement from the sample itself:
+# Chooses the laser power of an FCS measurement from the sample itself, the way a person would:
 #
-#   1. SCAN_EXPERIMENT, a short FCS measurement, runs once for every power in POWERS, lowest first,
-#      while the count rate and then the counts per molecule (CPM) are read live from ZEN's detector
-#      counting panel. A count rate above MAX_COUNT_RATE_KHZ ends the scan: that measurement runs to
-#      its end, because no call that stops a running one has been tried on the instrument, the
-#      higher powers are skipped and that power stays out of the curve
-#   2. the CPM curve is median filtered over 3 neighbouring powers and its highest point is taken
-#   3. MAIN_EXPERIMENT, the normal measurement, runs once at that power times POWER_FRACTION.
-#      Nothing is read during it; ZEN saves its .fcs and .raw files as usual
+#   1. probe   SCAN_EXPERIMENT, a short FCS measurement, runs at SENSIBLE_POWER and the count rate is
+#              read. With next to no signal the power is raised and the probe repeated
+#   2. jump    the count rate is close to linear in the power, so one reading gives the power that
+#              should land at TARGET_FRACTION of SAFETY_LIMIT_KHZ, in either direction
+#   3. scan    SCAN_FRACTIONS of that power run from the lowest up, reading the count rate and the
+#              counts per molecule (CPM). A count rate above SAFETY_LIMIT_KHZ ends the scan and that
+#              power stays out of the curve. CPM still rising at the top adds up to EXTEND_STEPS steps,
+#              unless a step is expected to pass the limit
+#   4. measure the CPM curve is median filtered over 3 neighbouring powers, its top is taken, and
+#              MAIN_EXPERIMENT, the normal measurement, runs once at that power
+#
+# A measurement that passes the limit runs to its end, because no call that stops a running one has
+# been tried on the instrument. The first probe may pass it too: it is one short measurement.
 #
 # The scan and the measurement are two experiments because the measurement time then stays a setting
 # of each experiment, and the macro needs no call that has not run on the instrument.
 #
-# The route to the panel was measured with probe_fcs_live_values.czmac and smart_fcs runs before this
-# one: the windows of ZEN hold FcsDetectorCountingViewModel as a DataContext, Execute keeps the UI
-# thread running so a second thread can read, and the panel's method can be set from a macro.
-# The panel keeps showing the PREVIOUS measurement until its list empties, so a value counts only
-# after the list has been seen empty. The first fresh value came about 3.8 s after the start, so
-# SCAN_EXPERIMENT must be long enough to deliver one. A power that gives none is left out of the curve.
+# The route to the panel was measured with probe_fcs_live_values.czmac: the windows of ZEN hold
+# FcsDetectorCountingViewModel as a DataContext, Execute keeps the UI thread running so a second
+# thread can read, and the panel's method can be set from a macro. The panel keeps showing the
+# PREVIOUS measurement until its list empties, so a value counts only after the list has been seen
+# empty. The first fresh value came about 3.8 s after the start, and each measurement needs a count
+# rate and then a CPM, so SCAN_EXPERIMENT should run for about 6 s.
 #
 # CPM rises with the power and bends over when the dye saturates or bleaches, so the top of the curve
 # is already past the linear range. POWER_FRACTION below 1 measures below it.
@@ -60,16 +65,30 @@ from System.Windows.Media import VisualTreeHelper
 from System.Windows.Threading import DispatcherOperationStatus, DispatcherPriority
 
 
-###################### settings ########################################################################
+###################### the two settings ################################################################
+
+SENSIBLE_POWER = 1.0        # % - where a person would start on this sample
+SAFETY_LIMIT_KHZ = 50.0     # count rate that must not be passed; also sets where the scan aims
+
+###################### experiments #####################################################################
 
 SCAN_EXPERIMENT = "FCS_scan"                # short FCS measurement, as saved in ZEN
 MAIN_EXPERIMENT = "FCS_main"                # the normal FCS measurement, as saved in ZEN
 LASER_LINE = "MTBLKM980LaserLine639"        # id of the laser line, as in smart_SLB_imaging
 
-POWERS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0, 1.3, 1.6, 2.0]     # %, lowest first
+###################### how the search behaves ##########################################################
+
+TARGET_FRACTION = 0.8                       # the jump aims at this fraction of the limit
+SCAN_FRACTIONS = [0.125, 0.25, 0.5, 0.7, 1.0]   # of the power from the jump, lowest first
+MIN_POWER = 0.01            # %
+MAX_POWER = 10.0            # % - never above this, whatever the jump says
+MIN_SIGNAL_KHZ = 1.0        # a probe below this is "no signal": the formula would run away
+NO_SIGNAL_FACTOR = 4.0      # how much the power is raised after a probe without signal
+NO_SIGNAL_RETRIES = 3
+EXTEND_FACTOR = 1.4         # step above the scan while CPM keeps rising
+EXTEND_STEPS = 2
 POWER_FRACTION = 1.0        # 1.0 = the top of the CPM curve; below 1 stays under it
-MIN_POINTS = 3              # fewer powers with a value than this and MAIN_EXPERIMENT does not run
-MAX_COUNT_RATE_KHZ = 50.0   # a count rate above this ends the scan
+MIN_POINTS = 3              # fewer powers with a CPM than this and MAIN_EXPERIMENT does not run
 
 SAMPLE_SECONDS = 0.5        # pause between readings of the panel
 SETTLE_SECONDS = 2.0        # pause after switching or running an experiment, as in the pipeline
@@ -246,11 +265,63 @@ def measure(experiment):
     return STATE["count_rate"], STATE["cpm"], STATE["samples"]
 
 
-###################### choosing the power ##############################################################
+MEASUREMENTS = []
+
+
+def run_once(experiment, power, phase):
+    """
+    One short measurement at one power, recorded in MEASUREMENTS.
+    :return: the entry, with count_rate_khz and cpm_khz, which are None without a fresh value
+    """
+    entry = {"phase": phase, "power_percent": power, "count_rate_khz": None, "cpm_khz": None}
+    MEASUREMENTS.append(entry)
+
+    find_laser_intensity(experiment).Value = str(power)
+
+    try:
+        entry["count_rate_khz"], entry["cpm_khz"], entry["samples"] = measure(experiment)
+    except Exception as error:
+        entry["error"] = str(error)
+        report("{} {} %: FAILED - {}".format(phase, power, error))
+        return entry
+
+    report("{} {} %: count rate {} kHz, CPM {} kHz".format(
+        phase, power, entry["count_rate_khz"], entry["cpm_khz"]))
+
+    time.sleep(SETTLE_SECONDS)
+    return entry
+
+
+###################### choosing the powers #############################################################
+
+
+def clamp_power(power):
+    return round(min(max(power, MIN_POWER), MAX_POWER), 4)
 
 
 def over_limit(count_rate):
-    return count_rate is not None and count_rate &gt; MAX_COUNT_RATE_KHZ
+    return count_rate is not None and count_rate &gt; SAFETY_LIMIT_KHZ
+
+
+def top_power(power, count_rate):
+    """
+    The power that should land at TARGET_FRACTION of the limit, from one reading.
+    """
+    return clamp_power(power * SAFETY_LIMIT_KHZ * TARGET_FRACTION / count_rate)
+
+
+def scan_powers(top):
+    """
+    SCAN_FRACTIONS of the top power, lowest first, without the duplicates clamping can make.
+    """
+    return sorted(set(clamp_power(top * fraction) for fraction in SCAN_FRACTIONS))
+
+
+def still_rising(points):
+    """
+    True when the last CPM is the highest so far: the curve has not bent yet.
+    """
+    return points[-1][1] == max(cpm for power, cpm in points)
 
 
 def smooth(values):
@@ -275,13 +346,76 @@ def choose_power(points):
     smoothed = smooth([cpm for power, cpm in points])
     top = smoothed.index(max(smoothed))
 
-    return round(points[top][0] * POWER_FRACTION, 4)
+    return clamp_power(points[top][0] * POWER_FRACTION)
+
+
+###################### the search ######################################################################
+
+
+def probe(experiment):
+    """
+    Finds a power with a usable signal, starting from SENSIBLE_POWER.
+    :return: tuple (power, count rate), or None when there is no signal or no reading at all
+    """
+    power = clamp_power(SENSIBLE_POWER)
+
+    for attempt in range(NO_SIGNAL_RETRIES + 1):
+        count_rate = run_once(experiment, power, "probe")["count_rate_khz"]
+
+        if count_rate is None:
+            report("no fresh value from the panel - is {} long enough?".format(SCAN_EXPERIMENT))
+            return None
+
+        if count_rate &gt;= MIN_SIGNAL_KHZ:
+            return power, count_rate
+
+        if power == MAX_POWER:
+            break
+
+        power = clamp_power(power * NO_SIGNAL_FACTOR)
+
+    report("no signal up to {} % - empty spot or out of focus?".format(power))
+    return None
+
+
+def scan_cpm(experiment, top):
+    """
+    Runs the powers up to top, and further while CPM keeps rising, until the limit is passed.
+    :return: list of (power, CPM), lowest power first
+    """
+    queue = scan_powers(top)
+    points = []
+    extended = 0
+
+    while queue:
+        power = queue.pop(0)
+        entry = run_once(experiment, power, "scan")
+
+        if over_limit(entry["count_rate_khz"]):
+            entry["over_limit"] = True
+            report("count rate above {} kHz - scan stopped, {} % stays out of the curve".format(
+                SAFETY_LIMIT_KHZ, power))
+            return points
+
+        if entry["cpm_khz"] is not None:
+            points.append((power, entry["cpm_khz"]))
+
+        if len(queue) == 0 and extended != EXTEND_STEPS and points and still_rising(points):
+            following = clamp_power(power * EXTEND_FACTOR)
+            expected_rate = (entry["count_rate_khz"] or 0.0) * following / power
+
+            # A step that is expected to pass the limit is not taken at all
+            if following != power and not over_limit(expected_rate):
+                queue.append(following)
+                extended += 1
+
+    return points
 
 
 ###################### run ############################################################################
 
-scan = activate(SCAN_EXPERIMENT)
-original_scan_power = find_laser_intensity(scan).Value
+scan_experiment = activate(SCAN_EXPERIMENT)
+original_scan_power = find_laser_intensity(scan_experiment).Value
 
 view_model = find_view_model()
 if view_model is None:
@@ -296,48 +430,27 @@ if STATE["count_rate_method"] is None or STATE["cpm_method"] is None:
 
 original_method = view_model.SelectedCountingMethod
 
-report("scan {}, main {}, laser {}".format(SCAN_EXPERIMENT, MAIN_EXPERIMENT, LASER_LINE))
+report("start at {} %, limit {} kHz, scan {}, main {}".format(
+    SENSIBLE_POWER, SAFETY_LIMIT_KHZ, SCAN_EXPERIMENT, MAIN_EXPERIMENT))
 
-measurements = []
+top = None
 points = []
 chosen = None
 main_result = None
 
 try:
-    for power in POWERS:
-        entry = {"power_percent": power}
-        measurements.append(entry)
+    found = probe(scan_experiment)
 
-        find_laser_intensity(scan).Value = str(power)
-
-        try:
-            count_rate, cpm, samples = measure(scan)
-        except Exception as error:
-            entry["error"] = str(error)
-            report("{} %: FAILED - {}".format(power, error))
-            continue
-
-        entry["count_rate_khz"] = count_rate
-        entry["cpm_khz"] = cpm
-        entry["samples"] = samples
-        report("{} %: count rate {} kHz, CPM {} kHz".format(power, count_rate, cpm))
-
-        if over_limit(count_rate):
-            entry["over_limit"] = True
-            report("count rate above {} kHz - scan stopped, {} % stays out of the curve".format(
-                MAX_COUNT_RATE_KHZ, power))
-            break
-
-        if cpm is not None:
-            points.append((power, cpm))
-
-        time.sleep(SETTLE_SECONDS)
+    if found is not None:
+        top = top_power(found[0], found[1])
+        report("jump: {} kHz at {} % -&gt; scan up to {} %".format(found[1], found[0], top))
+        points = scan_cpm(scan_experiment, top)
 
 finally:
     view_model.SelectedCountingMethod = original_method
 
     try:
-        find_laser_intensity(scan).Value = original_scan_power
+        find_laser_intensity(scan_experiment).Value = original_scan_power
     except Exception as error:
         report("RESTORE FAILED - {} - set {} back to {} % by hand".format(error, SCAN_EXPERIMENT, original_scan_power))
 
@@ -345,9 +458,8 @@ if len(points) &gt;= MIN_POINTS:
     chosen = choose_power(points)
     report("chosen power {} %".format(chosen))
 
-    if points[-1][1] == max(cpm for power, cpm in points):
-        report("WARNING: CPM was still rising at {} % - the curve did not bend, the list may end too low".format(
-            points[-1][0]))
+    if still_rising(points):
+        report("WARNING: CPM was still rising at {} % - the curve did not bend".format(points[-1][0]))
 
     main = activate(MAIN_EXPERIMENT)
     original_main_power = find_laser_intensity(main).Value
@@ -368,19 +480,21 @@ if len(points) &gt;= MIN_POINTS:
             report("RESTORE FAILED - {} - set {} back to {} % by hand".format(error, MAIN_EXPERIMENT, original_main_power))
 
 else:
-    report("only {} powers gave a CPM - {} was NOT run. Is {} long enough?".format(
-        len(points), MAIN_EXPERIMENT, SCAN_EXPERIMENT))
+    report("only {} powers gave a CPM - {} was NOT run".format(len(points), MAIN_EXPERIMENT))
 
 record = {
+    "sensible_power_percent": SENSIBLE_POWER,
+    "safety_limit_khz": SAFETY_LIMIT_KHZ,
     "scan_experiment": SCAN_EXPERIMENT,
     "main_experiment": MAIN_EXPERIMENT,
     "laser_line": LASER_LINE,
     "power_fraction": POWER_FRACTION,
+    "top_power_percent": top,
     "chosen_power_percent": chosen,
     "main_result": main_result,
     "focus_z": Zen.Devices.Focus.ActualPosition,
     "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-    "measurements": measurements,
+    "measurements": MEASUREMENTS,
 }
 
 json_path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
