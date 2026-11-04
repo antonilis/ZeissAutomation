@@ -194,7 +194,7 @@ from `Zen`, so `dump_zen_api.czmac` never shows them. `diagnostics/probe_fcs_liv
 them. The live values are read from the detector counting panel on screen: its `DataContext` in the
 WPF visual tree is an `FcsDetectorCountingViewModel`, with `CountRateValues` (entries with a string
 `Value`, such as `37.568 kHz`) and a settable `SelectedCountingMethod`. `ZenApi.fcs_count_rate` does
-this; the details are in `zen_lib/fcs_panel.py`. Measured on an LSM 880, ZEN 2 blue:
+this; the details are at the top of `zen_lib/zen_api.py`. Measured on an LSM 880, ZEN 2 blue:
 
 - `Execute` keeps the UI thread running, so a second thread can read while the macro waits.
 - The panel shows the previous measurement until its list empties, about 2 s after the start.

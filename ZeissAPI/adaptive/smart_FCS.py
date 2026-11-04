@@ -30,7 +30,7 @@ from zen_lib.adaptive_loader import register_adaptive
 # SMART_FCS_SCAN_EXPERIMENT run for about 6 s - the panel gives its first fresh value after about 3.8 s.
 # Without the panel, or with no signal, the power of the experiment stays as it is.
 #
-# Reading the panel is in zen_lib/fcs_panel.py; the route was measured with
+# Reading the panel is ZenApi.fcs_count_rate; the route was measured with
 # diagnostics/probe_fcs_live_values.czmac, on an LSM 880 with ZEN 2 blue.
 #
 # The power is changed in memory only, never in the .czexp. It stays at the last value after the run,
