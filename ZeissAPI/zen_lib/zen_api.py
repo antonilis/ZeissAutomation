@@ -248,6 +248,9 @@ class ZenApi:
         # it creates nothing and touches no file, so there is nothing to delay.
         self.path_manager = PathManager(config)
 
+        # The view model of the FCS detector counting panel, found once per run, see fcs_count_rate
+        self.fcs_view_model = None
+
     ###################### stage and focus #############################################################
 
     def get_stage_focus_position(self):
@@ -438,12 +441,17 @@ class ZenApi:
         """
         Runs an FCS experiment and reads its count rate live from ZEN's detector counting panel, which
         has to be open. Measured with diagnostics/probe_fcs_live_values.czmac, see the top of this file.
-        The panel is put back on the method it showed.
+        The panel is put back on the method it showed. The view model is found once and kept: that is
+        how it read seven measurements in a row, while searching again before every measurement read
+        the first one and then nothing, probably because the windows then hold more than one.
         :param str experiment_name: name of the experiment as saved in ZEN
         :return: float the last count rate of the measurement in kHz, or None when the panel gave none
         :raise ValueError: when the panel is not open
         """
-        view_model = _find_fcs_view_model()
+        if self.fcs_view_model is None:
+            self.fcs_view_model = _find_fcs_view_model()
+
+        view_model = self.fcs_view_model
 
         if view_model is None:
             raise ValueError("the detector counting panel is not open")
