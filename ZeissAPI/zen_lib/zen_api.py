@@ -50,7 +50,10 @@ except Exception as _error:
 #   - the macro runs on the UI thread, and Execute keeps that thread running, so a second thread can
 #     hand it a reading while the macro waits for Execute to return
 #   - the panel keeps showing the PREVIOUS measurement until its list empties, about 2 s after the
-#     start. A value counts only after the list has been seen empty
+#     start, for about a second. Readings can be up to 1.6 s apart then, because starting a measurement
+#     keeps the UI thread busy, so the empty list can be missed. A value therefore counts once the
+#     list has been seen empty OR once it differs from what the panel showed before the start
+#   - the panel keeps its last value after the measurement, so one more reading is taken at the end
 #   - the first fresh value comes about 3.8 s after the start, so an experiment read this way has to
 #     run for longer than that
 #
@@ -138,6 +141,11 @@ class _FcsCountRateReader:
         self.stop = False
         self.fresh = False
         self.count_rate = None
+        self.stale = None       # what the panel showed before the start
+        self.seen = []          # everything it showed, for the log when no value came
+
+    def _values(self):
+        return [str(entry.Value) for entry in self.view_model.CountRateValues]
 
     def _tick(self):
         """
@@ -145,10 +153,15 @@ class _FcsCountRateReader:
         measurement, so a reading that fails counts as no reading.
         """
         try:
-            values = [str(entry.Value) for entry in self.view_model.CountRateValues]
+            values = self._values()
+
+            if values not in self.seen:
+                self.seen.append(values)
+
+            if len(values) == 0 or values != self.stale:
+                self.fresh = True
 
             if len(values) == 0:
-                self.fresh = True
                 return
 
             number = _parse_khz(values[0])
@@ -178,6 +191,8 @@ class _FcsCountRateReader:
         :param measurement: function without arguments that runs the measurement and returns at its end
         :return: float the last fresh count rate in kHz, or None when the panel gave none
         """
+        self.stale = self._values()
+
         thread = Thread(ThreadStart(self._loop))
         thread.IsBackground = True
         thread.Start()
@@ -187,6 +202,12 @@ class _FcsCountRateReader:
         finally:
             self.stop = True
             thread.Join(TimeSpan.FromSeconds(FCS_UI_WAIT_SECONDS + FCS_SAMPLE_SECONDS + 1))
+
+        # The macro runs on the UI thread, so this reading needs no hand-over
+        self._tick()
+
+        if self.count_rate is None:
+            log("fcs_count_rate: no fresh value, the panel showed {}".format(self.seen))
 
         return self.count_rate
 
