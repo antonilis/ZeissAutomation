@@ -13,7 +13,10 @@
 # Chooses the laser power of an FCS measurement from the sample itself:
 #
 #   1. SCAN_EXPERIMENT, a short FCS measurement, runs once for every power in POWERS, lowest first,
-#      while the counts per molecule (CPM) are read live from ZEN's detector counting panel
+#      while the count rate and then the counts per molecule (CPM) are read live from ZEN's detector
+#      counting panel. A count rate above MAX_COUNT_RATE_KHZ ends the scan: that measurement runs to
+#      its end, because no call that stops a running one has been tried on the instrument, the
+#      higher powers are skipped and that power stays out of the curve
 #   2. the CPM curve is median filtered over 3 neighbouring powers and its highest point is taken
 #   3. MAIN_EXPERIMENT, the normal measurement, runs once at that power times POWER_FRACTION.
 #      Nothing is read during it; ZEN saves its .fcs and .raw files as usual
@@ -66,6 +69,7 @@ LASER_LINE = "MTBLKM980LaserLine639"        # id of the laser line, as in smart_
 POWERS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0, 1.3, 1.6, 2.0]     # %, lowest first
 POWER_FRACTION = 1.0        # 1.0 = the top of the CPM curve; below 1 stays under it
 MIN_POINTS = 3              # fewer powers with a value than this and MAIN_EXPERIMENT does not run
+MAX_COUNT_RATE_KHZ = 50.0   # a count rate above this ends the scan
 
 SAMPLE_SECONDS = 0.5        # pause between readings of the panel
 SETTLE_SECONDS = 2.0        # pause after switching or running an experiment, as in the pipeline
@@ -161,27 +165,44 @@ def parse_value(text):
 
 ###################### reading during a measurement ####################################################
 
-STATE = {"view_model": None, "stop": False, "fresh": False, "started": 0.0, "samples": [], "last": None}
+STATE = {"view_model": None, "count_rate_method": None, "cpm_method": None, "stop": False, "fresh": False,
+         "skip": False, "started": 0.0, "samples": [], "count_rate": None, "cpm": None}
 
 
 def tick():
     """
     One reading of the panel, on the UI thread. A value counts only after the list has been empty
-    once in this measurement; before that it belongs to the previous one.
+    once in this measurement; before that it belongs to the previous one. The first fresh count rate
+    switches the panel to CPM, and the reading right after a switch is skipped, because it may still
+    show the old method.
     """
     try:
-        values = [str(entry.Value) for entry in STATE["view_model"].CountRateValues]
+        view_model = STATE["view_model"]
+        method = str(view_model.SelectedCountingMethod)
+        values = [str(entry.Value) for entry in view_model.CountRateValues]
 
-        STATE["samples"].append({"t_s": round(time.time() - STATE["started"], 1), "values": values})
+        STATE["samples"].append({"t_s": round(time.time() - STATE["started"], 1), "method": method,
+                                 "values": values})
 
         if len(values) == 0:
             STATE["fresh"] = True
             return
 
+        if STATE["skip"]:
+            STATE["skip"] = False
+            return
+
         number = parse_value(values[0])
 
-        if STATE["fresh"] and number is not None:
-            STATE["last"] = number
+        if not STATE["fresh"] or number is None:
+            return
+
+        if method == str(STATE["count_rate_method"]):
+            STATE["count_rate"] = number
+            view_model.SelectedCountingMethod = STATE["cpm_method"]
+            STATE["skip"] = True
+        else:
+            STATE["cpm"] = number
 
     except Exception as error:
         STATE["samples"].append({"error": str(error)})
@@ -203,12 +224,14 @@ def reading_loop():
         time.sleep(SAMPLE_SECONDS)
 
 
-def measure_cpm(experiment):
+def measure(experiment):
     """
     Runs the experiment once and reads the panel while it runs.
-    :return: tuple (the last fresh CPM or None, list of all samples)
+    :return: tuple (first fresh count rate or None, last fresh CPM or None, list of all samples)
     """
-    STATE.update({"stop": False, "fresh": False, "started": time.time(), "samples": [], "last": None})
+    STATE.update({"stop": False, "fresh": False, "skip": False, "started": time.time(), "samples": [],
+                  "count_rate": None, "cpm": None})
+    STATE["view_model"].SelectedCountingMethod = STATE["count_rate_method"]
 
     thread = Thread(ThreadStart(reading_loop))
     thread.IsBackground = True
@@ -220,10 +243,14 @@ def measure_cpm(experiment):
         STATE["stop"] = True
         thread.Join(TimeSpan.FromSeconds(UI_WAIT_SECONDS + SAMPLE_SECONDS + 1))
 
-    return STATE["last"], STATE["samples"]
+    return STATE["count_rate"], STATE["cpm"], STATE["samples"]
 
 
 ###################### choosing the power ##############################################################
+
+
+def over_limit(count_rate):
+    return count_rate is not None and count_rate &gt; MAX_COUNT_RATE_KHZ
 
 
 def smooth(values):
@@ -260,13 +287,14 @@ view_model = find_view_model()
 if view_model is None:
     raise Exception("the detector counting panel was not found - open it and run the macro again")
 
-per_molecule = find_method(view_model, "molecule")
-if per_molecule is None:
-    raise Exception("the panel has no counts per molecule method")
+STATE["view_model"] = view_model
+STATE["count_rate_method"] = find_method(view_model, "countrate")
+STATE["cpm_method"] = find_method(view_model, "molecule")
+
+if STATE["count_rate_method"] is None or STATE["cpm_method"] is None:
+    raise Exception("the panel has no count rate or no counts per molecule method")
 
 original_method = view_model.SelectedCountingMethod
-view_model.SelectedCountingMethod = per_molecule
-STATE["view_model"] = view_model
 
 report("scan {}, main {}, laser {}".format(SCAN_EXPERIMENT, MAIN_EXPERIMENT, LASER_LINE))
 
@@ -283,15 +311,22 @@ try:
         find_laser_intensity(scan).Value = str(power)
 
         try:
-            cpm, samples = measure_cpm(scan)
+            count_rate, cpm, samples = measure(scan)
         except Exception as error:
             entry["error"] = str(error)
             report("{} %: FAILED - {}".format(power, error))
             continue
 
+        entry["count_rate_khz"] = count_rate
         entry["cpm_khz"] = cpm
         entry["samples"] = samples
-        report("{} %: CPM {} kHz".format(power, cpm))
+        report("{} %: count rate {} kHz, CPM {} kHz".format(power, count_rate, cpm))
+
+        if over_limit(count_rate):
+            entry["over_limit"] = True
+            report("count rate above {} kHz - scan stopped, {} % stays out of the curve".format(
+                MAX_COUNT_RATE_KHZ, power))
+            break
 
         if cpm is not None:
             points.append((power, cpm))
