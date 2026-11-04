@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### where to put this file before running it ######################################
+# This is a diagnostic, kept out of the production macros in ZeissAPI/diagnostics/.
+# Standalone: it does not import zen_lib and reads no config. Copy it into any folder ZEN loads
+# macros from and run it from the macro editor. The report is written to the Windows temp folder.
+#
+###################### what this probe answers #########################################################
+# Is there anything in ZEN a macro could read the live count rate of the FCS detector from?
+#
+# dump_zen_api.czmac walks only the types reachable from Zen, so the LSM and FCS internals may never
+# have appeared in docs/zen_api. This probe looks at everything else:
+#
+#   1. every public type of every Zeiss assembly loaded in ZEN, by the name of the type and of its
+#      members - names only, through reflection, nothing is called
+#   2. Zeiss .dll files in the ZEN folder with FCS in the name, which may not be loaded yet
+#   3. the components and parameters of Zen.Devices.ReadHardwareSetting(), a snapshot of the stand
+#
+# An assembly is loaded on first use, so open the FCS experiment and let it run once in this ZEN
+# session before running the probe.
+#
+# SAFETY: nothing moves, no experiment is loaded or executed, no laser or setting is changed.
+# A hit here only means a name exists; whether it gives live counts is the next thing to try.
+
+import re
+import time
+
+from System import AppDomain
+from System.IO import Directory, File, Path, SearchOption
+from System.Reflection import BindingFlags
+
+
+###################### settings ########################################################################
+
+# What a count rate could be called. "Count" alone is left out: every collection has a Count.
+MEMBER_PATTERN = re.compile(r"CountRate|CountsPer|PhotonCount|Kcps|Kcounts|Cps$|Fcs|ConfoCor|Correlat",
+                            re.IGNORECASE)
+HARDWARE_PATTERN = re.compile(r"Count|Rate|Fcs|Photon|Detector|Apd|Gasp|GaAsP", re.IGNORECASE)
+
+MAX_MEMBERS_PER_TYPE = 60
+ALL_DECLARED = (BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static |
+                BindingFlags.DeclaredOnly)
+
+
+###################### reporting #######################################################################
+
+REPORT = []
+
+
+def note(text):
+    REPORT.append(text)
+
+
+###################### 1. types and members ############################################################
+
+
+def member_lines(clr_type):
+    """
+    Properties, methods and events of a type, as text. Only metadata is read, so no getter runs.
+    """
+    lines = []
+
+    for prop in clr_type.GetProperties(ALL_DECLARED):
+        lines.append("property {} {}".format(prop.PropertyType.Name, prop.Name))
+
+    for method in clr_type.GetMethods(ALL_DECLARED):
+        if method.IsSpecialName:
+            continue
+        arguments = ", ".join(p.ParameterType.Name for p in method.GetParameters())
+        lines.append("method {} {}({})".format(method.ReturnType.Name, method.Name, arguments))
+
+    for event in clr_type.GetEvents(ALL_DECLARED):
+        lines.append("event {}".format(event.Name))
+
+    return lines
+
+
+def scan_type(clr_type):
+    """
+    All members of a type whose own name matches, the matching members of any other type.
+    :return: list of lines to report, empty when nothing matches
+    """
+    members = member_lines(clr_type)
+
+    if MEMBER_PATTERN.search(clr_type.Name):
+        return members[:MAX_MEMBERS_PER_TYPE] or ["(no public members)"]
+
+    return [line for line in members if MEMBER_PATTERN.search(line.split("(")[0])]
+
+
+def scan_assemblies():
+    scanned, failed, hits = 0, [], 0
+
+    for assembly in AppDomain.CurrentDomain.GetAssemblies():
+        name = assembly.GetName().Name
+
+        if "zeiss" not in name.lower() and "zen" not in name.lower():
+            continue
+
+        try:
+            types = assembly.GetExportedTypes()
+        except Exception as error:
+            failed.append("{}: {}".format(name, error))
+            continue
+
+        scanned += 1
+
+        for clr_type in types:
+            try:
+                lines = scan_type(clr_type)
+            except Exception:
+                continue
+
+            if lines:
+                hits += 1
+                note("{}  [{}]".format(clr_type.FullName, name))
+                for line in lines:
+                    note("    " + line)
+
+    note("")
+    note("assemblies scanned {}, types with a hit {}".format(scanned, hits))
+    note("assemblies that could not be read: {}".format(failed))
+
+
+###################### 2. files not loaded yet #########################################################
+
+
+def scan_files():
+    folder = AppDomain.CurrentDomain.BaseDirectory
+    note("ZEN folder: {}".format(folder))
+
+    names = [Path.GetFileName(path) for path in Directory.GetFiles(folder, "*.dll", SearchOption.AllDirectories)]
+    loaded = set(a.GetName().Name.lower() for a in AppDomain.CurrentDomain.GetAssemblies())
+
+    for name in sorted(set(names)):
+        if re.search(r"fcs|confocor|correlat", name, re.IGNORECASE):
+            state = "loaded" if Path.GetFileNameWithoutExtension(name).lower() in loaded else "NOT loaded"
+            note("    {} ({})".format(name, state))
+
+
+###################### 3. hardware parameters ##########################################################
+
+
+def scan_hardware():
+    setting = Zen.Devices.ReadHardwareSetting()
+
+    for component in setting.GetAllComponentIds():
+        names = list(setting.GetAllParameterNames(component))
+        component_matches = HARDWARE_PATTERN.search(component) is not None
+
+        for name in names:
+            if not component_matches and not HARDWARE_PATTERN.search(name):
+                continue
+            try:
+                value = setting.GetParameter(component, name)
+            except Exception as error:
+                value = "unreadable: {}".format(error)
+            note("    {}.{} = {}".format(component, name, value))
+
+
+###################### run ############################################################################
+
+for title, step in (("1. types and members in loaded Zeiss assemblies", scan_assemblies),
+                    ("2. FCS .dll files in the ZEN folder", scan_files),
+                    ("3. hardware setting parameters", scan_hardware)):
+    note("")
+    note("=" * 78)
+    note(title)
+    note("=" * 78)
+    try:
+        step()
+    except Exception as error:
+        note("FAILED: {}".format(error))
+
+report_path = Path.Combine(Path.GetTempPath(), "probe_fcs_live_counts_{}.txt".format(time.strftime("%Y%m%d_%H%M%S")))
+File.WriteAllText(report_path, "\n".join(REPORT))
+
+output = ZenWindow()
+output.Initialize("FCS live counts probe")
+output.AddMultiLineTextBox("report", "Written to {}".format(report_path), "\n".join(REPORT[:400]))
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>1</Row>
+  <Column>1</Column>
+</Script>
