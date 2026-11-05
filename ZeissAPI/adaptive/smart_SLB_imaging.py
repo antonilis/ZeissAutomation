@@ -20,7 +20,7 @@ from adaptive.smart_focus import smart_focus
 # same brightness, instead of saturating the bright wells and drowning the dim ones in noise:
 #
 #   1. smart_focus - Definite Focus + a narrow autofocus, or the experiment's own wide autofocus
-#      (SMART_SLB_USE_SURFACE)
+#      (use_surface)
 #   2. set the reference power and take one test frame of the same experiment, on the same field
 #   3. the chosen metric of that frame (mean or median), background subtracted
 #   4. power = reference * (target - background) / (metric - background)
@@ -46,54 +46,53 @@ from adaptive.smart_focus import smart_focus
 
 
 ###################### settings ########################################################################
-
-SMART_SLB_LASER_LINE = "MTBLKM980LaserLine639"
-
-SMART_SLB_USE_SURFACE = True        # focus with Definite Focus + a narrow autofocus (see smart_focus.py)
-
-SMART_SLB_METRIC = "mean"           # "mean": equal integrals; "median": equal bilayer brightness
-SMART_SLB_REFERENCE_POWER = 0.2     # % - the test frame is always taken at this power
-SMART_SLB_TARGET = 3000.0           # counts per pixel - what the metric of every well should come out at
-SMART_SLB_BACKGROUND = 55.0         # counts - median with the laser at 0; re-measure after changing
-                                    # objective, detector or gain
-SMART_SLB_P99_LIMIT = 50000.0       # counts - the 99th percentile must stay below this (16-bit: 65535)
-SMART_SLB_MIN_POWER = 0.01          # %
-SMART_SLB_MAX_POWER = 2.0           # %
-
-SMART_SLB_PIXEL_STEP = 16           # every n-th pixel goes into the statistics
-SMART_SLB_MIN_SIGNAL = 20.0         # counts above background below which the test frame is "no signal"
+# The "smart_SLB_imaging" entry of config/adaptive_config.json:
+#
+#   laser_line        id of the laser line
+#   use_surface       focus with Definite Focus + a narrow autofocus, see smart_focus.py
+#   metric            "mean": equal integrals; "median": equal bilayer brightness
+#   reference_power   % - the test frame is always taken at this power
+#   target            counts per pixel - what the metric of every well should come out at
+#   background        counts - median with the laser at 0; re-measure after changing objective, detector
+#                     or gain
+#   p99_limit         counts - the 99th percentile must stay below this (16-bit: 65535)
+#   min_power, max_power, in %
+#   pixel_step        every n-th pixel goes into the statistics
+#   min_signal        counts above background below which the test frame is "no signal"
 
 
 ###################### helpers ########################################################################
 
 
-def _smart_slb_choose_power(statistics):
+def _smart_slb_choose_power(settings, statistics):
     """
     The power that brings the chosen metric to the target, assuming - as measured - that the signal
     above background is proportional to the power.
     :return: tuple (power in %, reason it was limited or None)
     """
-    signal = statistics[SMART_SLB_METRIC] - SMART_SLB_BACKGROUND
+    background = settings["background"]
+    reference_power = settings["reference_power"]
+    signal = statistics[settings["metric"]] - background
 
-    if signal < SMART_SLB_MIN_SIGNAL:
-        return SMART_SLB_MAX_POWER, "no signal in the test frame"
+    if signal < settings["min_signal"]:
+        return settings["max_power"], "no signal in the test frame"
 
-    power = SMART_SLB_REFERENCE_POWER * (SMART_SLB_TARGET - SMART_SLB_BACKGROUND) / signal
+    power = reference_power * (settings["target"] - background) / signal
     limited = None
 
     # The brightest objects must not saturate at the chosen power either
-    bright = statistics["p99"] - SMART_SLB_BACKGROUND
+    bright = statistics["p99"] - background
     if bright > 0:
-        saturation_power = SMART_SLB_REFERENCE_POWER * (SMART_SLB_P99_LIMIT - SMART_SLB_BACKGROUND) / bright
+        saturation_power = reference_power * (settings["p99_limit"] - background) / bright
         if power > saturation_power:
             power = saturation_power
             limited = "99th percentile would saturate"
 
-    if power > SMART_SLB_MAX_POWER:
-        power, limited = SMART_SLB_MAX_POWER, "maximum power"
+    if power > settings["max_power"]:
+        power, limited = settings["max_power"], "maximum power"
 
-    if power < SMART_SLB_MIN_POWER:
-        power, limited = SMART_SLB_MIN_POWER, "minimum power"
+    if power < settings["min_power"]:
+        power, limited = settings["min_power"], "minimum power"
 
     return power, limited
 
@@ -105,47 +104,56 @@ def _smart_slb_choose_power(statistics):
 def smart_SLB_imaging(ctx):
     """
     Focuses with smart_focus, then chooses the laser power of the imaging experiment from a test
-    frame, so that SMART_SLB_METRIC of the image comes out at SMART_SLB_TARGET. ctx.obj is not used:
-    the power depends on the field, not on an object, so the function works the same with and without
-    object finding.
+    frame, so that the metric of the image comes out at the target. ctx.obj is not used: the power
+    depends on the field, not on an object, so the function works the same with and without object
+    finding.
     """
     zen_api = ctx.zen_api
     experiment = ctx.experiment
+    settings = ctx.settings
 
-    smart_focus(ctx, use_surface=SMART_SLB_USE_SURFACE)
+    if not settings:
+        log("smart_SLB_imaging: no entry in adaptive_config.json - nothing done")
+        return
+
+    laser_line = settings["laser_line"]
+    reference_power = settings["reference_power"]
+    metric = settings["metric"]
+
+    smart_focus(ctx, use_surface=settings["use_surface"])
 
     zen_api.activate_experiment(experiment)
 
-    if zen_api.get_laser_power(experiment, SMART_SLB_LASER_LINE) is None:
-        log("smart_SLB_imaging: {} has no {} - power left unchanged".format(experiment, SMART_SLB_LASER_LINE))
+    if zen_api.get_laser_power(experiment, laser_line) is None:
+        log("smart_SLB_imaging: {} has no {} - power left unchanged".format(experiment, laser_line))
         return
 
     # Always from the reference, never from whatever the previous well left behind
-    zen_api.set_laser_power(experiment, SMART_SLB_LASER_LINE, SMART_SLB_REFERENCE_POWER)
+    zen_api.set_laser_power(experiment, laser_line, reference_power)
 
-    statistics = zen_api.frame_statistics(experiment, SMART_SLB_PIXEL_STEP)
+    statistics = zen_api.frame_statistics(experiment, settings["pixel_step"])
 
-    power, limited = _smart_slb_choose_power(statistics)
+    power, limited = _smart_slb_choose_power(settings, statistics)
 
-    chosen = zen_api.set_laser_power(experiment, SMART_SLB_LASER_LINE, round(power, 4))
+    chosen = zen_api.set_laser_power(experiment, laser_line, round(power, 4))
 
     log("smart_SLB_imaging: test frame at {} % -> mean {:.0f}, median {:.0f}, p99 {:.0f}; "
         "{} target {:.0f}; set {} to {} %{}".format(
-            SMART_SLB_REFERENCE_POWER, statistics["mean"], statistics["median"], statistics["p99"],
-            SMART_SLB_METRIC, SMART_SLB_TARGET, SMART_SLB_LASER_LINE, chosen,
+            reference_power, statistics["mean"], statistics["median"], statistics["p99"],
+            metric, settings["target"], laser_line, chosen,
             " ({})".format(limited) if limited else ""))
 
     if limited == "no signal in the test frame":
         log("smart_SLB_imaging: WARNING - {} {:.0f} is barely above the background {}; empty well or "
-            "out of focus?".format(SMART_SLB_METRIC, statistics[SMART_SLB_METRIC], SMART_SLB_BACKGROUND))
+            "out of focus?".format(metric, statistics[metric], settings["background"]))
 
     record = {
         "experiment": experiment,
-        "laser_line": SMART_SLB_LASER_LINE,
-        "metric": SMART_SLB_METRIC,
-        "target": SMART_SLB_TARGET,
-        "background": SMART_SLB_BACKGROUND,
-        "reference_power_percent": SMART_SLB_REFERENCE_POWER,
+        "laser_line": laser_line,
+        "metric": metric,
+        "target": settings["target"],
+        "background": settings["background"],
+        "reference_power_percent": reference_power,
         "test_mean": statistics["mean"],
         "test_median": statistics["median"],
         "test_p99": statistics["p99"],

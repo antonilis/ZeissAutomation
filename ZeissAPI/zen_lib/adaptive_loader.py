@@ -55,13 +55,15 @@ class AdaptiveContext:
     param str name: name of the overview point
     param PathManager path_manager: builds the result folder, so that a plugin's own files land next
     to what the experiment produces
-    param dict settings: the entry of this adaptive function in adaptive_config.json, empty without one
+    param str function_name: name of the adaptive function, which picks ctx.settings
+    param dict adaptive_settings: all of adaptive_config.json. ctx.settings is the entry of this function,
+    empty without one; settings_for gives the entry of a plugin this one calls
     param dict surface_offsets: um from the Definite Focus surface to the sample, with the objective
     magnification as a string for the key, from path_config.json of this microscope
     """
 
-    def __init__(self, zen_api, experiment, obj_id, stage, obj, name, path_manager, settings,
-                 surface_offsets):
+    def __init__(self, zen_api, experiment, obj_id, stage, obj, name, path_manager, function_name,
+                 adaptive_settings, surface_offsets):
 
         self.zen_api = zen_api
         self.experiment = experiment
@@ -70,8 +72,17 @@ class AdaptiveContext:
         self.obj = obj
         self.name = name
         self.path_manager = path_manager
-        self.settings = settings
+        self.adaptive_settings = adaptive_settings
+        self.settings = self.settings_for(function_name)
         self.surface_offsets = surface_offsets
+
+    def settings_for(self, function_name):
+        """
+        A plugin called by another one gets the ctx of its caller, so it asks for its own entry here.
+        :param str function_name: name of an adaptive function
+        :return: dict, its entry in adaptive_config.json, empty without one
+        """
+        return self.adaptive_settings.get(function_name, {})
 
     def result_dir(self):
         """

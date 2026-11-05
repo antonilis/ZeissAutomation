@@ -23,10 +23,10 @@ from zen_lib.adaptive_loader import register_adaptive
 # use_surface=True (smart_SLB_imaging):
 #   1. Definite Focus finds the cover-slip surface         zen_api.find_surface()
 #   2. move to surface + the offset of the objective       the SLB sits 6.5 um below it at 40x
-#   3. narrow software autofocus around that point         with SMART_FOCUS_NARROW_EXPERIMENT
+#   3. narrow software autofocus around that point         with narrow_experiment
 #   and falls back to the wide autofocus of use_surface=False when there is no offset for the
 #   objective, when FindSurface or the narrow autofocus raises, or when the narrow autofocus ends up
-#   more than SMART_FOCUS_MAX_CORRECTION from the target - at the edge of its window, which means the
+#   more than max_correction_um from the target - at the edge of its window, which means the
 #   bilayer is probably outside it.
 #
 # Measured on the instrument (probe_smart_SLB_imaging.czmac and _2, 40x): FindSurface takes ~5 s and
@@ -43,25 +43,30 @@ from zen_lib.adaptive_loader import register_adaptive
 
 
 ###################### settings ########################################################################
-
-SMART_FOCUS_NARROW_EXPERIMENT = "SLB_A655_AF_narrow"   # a copy of the imaging experiment, AF range 10 um
-
+# The "smart_focus" entry of config/adaptive_config.json, whichever plugin calls this one:
+#
+#   narrow_experiment   a copy of the imaging experiment, with an autofocus range of 10 um
+#   max_correction_um   a narrow autofocus that moves further than this falls back to wide
+#
 # The um from the Definite Focus surface to the bilayer, per objective magnification, belong to the
 # microscope: surface_offsets in path_config.json. An objective that is not listed gets the wide
 # autofocus, because an offset from another objective would be wrong.
-
-SMART_FOCUS_MAX_CORRECTION = 4.0    # um - a narrow autofocus that moves further than this falls back to wide
 
 
 ###################### helpers ########################################################################
 
 
-def _smart_focus_surface_then_narrow(zen_api, surface_offsets, record):
+def _smart_focus_surface_then_narrow(zen_api, settings, surface_offsets, record):
     """
     Definite Focus, the objective's offset, then the narrow autofocus. Everything measured on the way
     goes into record.
     :return: the reason to fall back to the wide autofocus, or None when this succeeded
     """
+    if not settings:
+        return "no smart_focus entry in adaptive_config.json"
+
+    narrow_experiment = settings["narrow_experiment"]
+
     magnification = zen_api.objective_magnification()
     record["objective_magnification"] = magnification
 
@@ -84,14 +89,14 @@ def _smart_focus_surface_then_narrow(zen_api, surface_offsets, record):
 
     started = time.time()
     try:
-        record["z_narrow"] = zen_api.autofocus(SMART_FOCUS_NARROW_EXPERIMENT)
+        record["z_narrow"] = zen_api.autofocus(narrow_experiment)
     except Exception as error:
-        return "narrow autofocus with {} failed: {}".format(SMART_FOCUS_NARROW_EXPERIMENT, error)
+        return "narrow autofocus with {} failed: {}".format(narrow_experiment, error)
 
     record["narrow_seconds"] = time.time() - started
     record["narrow_correction"] = record["z_narrow"] - target
 
-    if abs(record["narrow_correction"]) > SMART_FOCUS_MAX_CORRECTION:
+    if abs(record["narrow_correction"]) > settings["max_correction_um"]:
         return "narrow autofocus moved {:+.2f} um from the target".format(record["narrow_correction"])
 
     return None
@@ -113,7 +118,8 @@ def smart_focus(ctx, use_surface=False):
     fallback = None
 
     if use_surface:
-        fallback = _smart_focus_surface_then_narrow(zen_api, ctx.surface_offsets, record)
+        fallback = _smart_focus_surface_then_narrow(zen_api, ctx.settings_for("smart_focus"),
+                                                    ctx.surface_offsets, record)
 
         if fallback:
             log("smart_focus: falling back to the wide autofocus - {}".format(fallback))

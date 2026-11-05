@@ -170,7 +170,8 @@ top of a GUV, using the radius the analysis measured.
 3. The function takes one argument, an `AdaptiveContext`: `ctx.zen_api`, `ctx.experiment` (the
    name of the experiment about to run), `ctx.obj`, `ctx.obj_id`, `ctx.stage`, `ctx.name` and
    `ctx.result_dir()` for the plugin's own files, `ctx.settings` (its entry in
-   `adaptive_config.json`, keyed by the function's name, read once per run) and
+   `adaptive_config.json`, keyed by the function's name, read once per run; a plugin called by
+   another one has its caller's `ctx`, so it uses `ctx.settings_for("its_name")`) and
    `ctx.surface_offsets` (per microscope, from `path_config.json`). **`ctx.obj` is `None` whenever object finding is
    switched off** — there is no object then, the macro is only visiting overview points — so a
    plugin must handle both. `fcs_zscan` falls back to a radius of zero and centres its scan on the

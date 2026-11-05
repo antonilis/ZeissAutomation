@@ -293,7 +293,7 @@ class AcquisitionPipeline:
             log('Doing adaptive experiment {} on {}'.format(adaptive.__name__, exp_item))
 
             adaptive(AdaptiveContext(self.zeiss_api, exp_item, self._result_id(obj_id), stage, obj, name,
-                                     self.path_manager, self.adaptive_settings.get(adaptive.__name__, {}),
+                                     self.path_manager, adaptive.__name__, self.adaptive_settings,
                                      self.config.surface_offsets))
 
             log('Rewrote experiment {} with {}'.format(exp_item, adaptive.__name__))

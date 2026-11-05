@@ -20,6 +20,15 @@ from zen_lib.adaptive_loader import register_adaptive
 #   ctx.obj          the object it runs on, or None with object finding switched off - the pipeline
 #                    is then only visiting overview points, and a plugin has to cope with both
 #   ctx.result_dir() the folder the experiment's results are saved in, for the plugin's own files
+#   ctx.settings     the entry of the function in config/adaptive_config.json, empty without one
+#   ctx.settings_for(name)  the entry of another plugin, for a plugin called by this one
+#   ctx.surface_offsets     um from the Definite Focus surface to the sample, per objective, from
+#                    path_config.json of this microscope
+#
+# Settings, the "fcs_zscan" entry of config/adaptive_config.json:
+#
+#   max_radius_um    a larger radius is not believed, the scan is then centred on the current focus
+#   z_offsets_um     the positions of the scan, relative to its centre
 
 
 @register_adaptive
@@ -29,12 +38,18 @@ def fcs_zscan(ctx):
     by the object radius and set this as the center of z-scan with FCS, useful for finding the top of GUVs when combined
     when the experiment is chosen for the z-reanalysis.
     """
+    settings = ctx.settings
+
+    if not settings:
+        log("fcs_zscan: no entry in adaptive_config.json - positions left unchanged")
+        return
+
     # With object finding switched off there is no object at all and the pipeline hands over
     # obj=None. The scan is then centred on the current focus instead of on the top of a GUV,
     # which is exactly what is wanted when visiting bare overview points.
     radius = ctx.obj['radius'] if ctx.obj else 0
 
-    if radius > 200:
+    if radius > settings["max_radius_um"]:
         radius = 0
 
     actual_position = ctx.zen_api.get_stage_focus_position()
@@ -42,8 +57,7 @@ def fcs_zscan(ctx):
 
     modified_position = [actual_position[0], actual_position[1], actual_position[2] + radius]
 
-    z_offset = [modified_position[2] - 0.2, modified_position[2] - 0.1, modified_position[2],
-                modified_position[2] + 0.1, modified_position[2] + 0.2]
+    z_offset = [modified_position[2] + offset for offset in settings["z_offsets_um"]]
 
     positions_dict = {}
 
