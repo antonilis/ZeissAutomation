@@ -46,9 +46,9 @@ from zen_lib.adaptive_loader import register_adaptive
 
 SMART_FOCUS_NARROW_EXPERIMENT = "SLB_A655_AF_narrow"   # a copy of the imaging experiment, AF range 10 um
 
-# um from the Definite Focus surface to the bilayer, per objective magnification. An objective that is
-# not listed gets the wide autofocus, because an offset from another objective would be wrong.
-SMART_FOCUS_SURFACE_OFFSETS = {40: -6.5, 20: -17}
+# The um from the Definite Focus surface to the bilayer, per objective magnification, belong to the
+# microscope: surface_offsets in path_config.json. An objective that is not listed gets the wide
+# autofocus, because an offset from another objective would be wrong.
 
 SMART_FOCUS_MAX_CORRECTION = 4.0    # um - a narrow autofocus that moves further than this falls back to wide
 
@@ -56,7 +56,7 @@ SMART_FOCUS_MAX_CORRECTION = 4.0    # um - a narrow autofocus that moves further
 ###################### helpers ########################################################################
 
 
-def _smart_focus_surface_then_narrow(zen_api, record):
+def _smart_focus_surface_then_narrow(zen_api, surface_offsets, record):
     """
     Definite Focus, the objective's offset, then the narrow autofocus. Everything measured on the way
     goes into record.
@@ -65,10 +65,10 @@ def _smart_focus_surface_then_narrow(zen_api, record):
     magnification = zen_api.objective_magnification()
     record["objective_magnification"] = magnification
 
-    if magnification not in SMART_FOCUS_SURFACE_OFFSETS:
-        return "no surface offset for a {}x objective".format(magnification)
+    if str(magnification) not in surface_offsets:
+        return "no surface offset for a {}x objective in path_config.json".format(magnification)
 
-    offset = SMART_FOCUS_SURFACE_OFFSETS[magnification]
+    offset = surface_offsets[str(magnification)]
 
     started = time.time()
     try:
@@ -113,7 +113,7 @@ def smart_focus(ctx, use_surface=False):
     fallback = None
 
     if use_surface:
-        fallback = _smart_focus_surface_then_narrow(zen_api, record)
+        fallback = _smart_focus_surface_then_narrow(zen_api, ctx.surface_offsets, record)
 
         if fallback:
             log("smart_focus: falling back to the wide autofocus - {}".format(fallback))

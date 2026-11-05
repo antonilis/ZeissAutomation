@@ -6,4 +6,5 @@
 "python_project_root": "D:\\automation\\",
 "zeiss_temp_file": "D:\\zeiss\\Pictures\\",
 "log_path": "D:\\automation\\zen_log.txt",
-"last_setup_path": "D:\\automation\\last_setup.json"}
+"last_setup_path": "D:\\automation\\last_setup.json",
+"surface_offsets": {"40": -6.5, "20": -17}}

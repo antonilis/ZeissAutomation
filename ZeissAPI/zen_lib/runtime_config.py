@@ -18,6 +18,7 @@ CONFIG_DIR_NAME = "config"
 PATH_CONFIG_NAME = "path_config.json"
 PROCESSING_CONFIG_NAME = "processing_config.json"
 SELECTION_CONFIG_NAME = "selection_config.json"
+ADAPTIVE_CONFIG_NAME = "adaptive_config.json"
 
 # Folder holding the adaptive experiment plugins. They are not imported: main_macro reads
 # each file and runs it in its own namespace, which is the only way a file outside the macro
@@ -81,6 +82,13 @@ def selection_config_file():
     :return: str absolute path to selection_config.json
     """
     return Path.Combine(config_dir(), SELECTION_CONFIG_NAME)
+
+
+def adaptive_config_file():
+    """
+    :return: str absolute path to adaptive_config.json
+    """
+    return Path.Combine(config_dir(), ADAPTIVE_CONFIG_NAME)
 
 
 def adaptive_dir():
@@ -191,6 +199,16 @@ class RuntimeConfig:
         # Read by main_macro itself rather than handed to World B: the plugins in there are
         # ZEN code and never leave this side
         self.adaptive_path = adaptive_dir()
+        self.adaptive_config_path = adaptive_config_file()
+
+        # um from the Definite Focus surface to the sample, per objective magnification. It belongs to
+        # the microscope, which is why it sits here and not with the settings of the plugins. Optional,
+        # because the path_config.json of a microscope is kept when the code is updated
+        self.surface_offsets = self.config.get("surface_offsets", {})
+
+        if not self.surface_offsets:
+            log("WARNING: {} has no surface_offsets, the surface offset focusing will not work".format(
+                self.config_path))
 
         log("Loaded path configuration from {}".format(self.config_path))
         log("Logging to {}".format(self.log_path))
@@ -216,3 +234,16 @@ class RuntimeConfig:
             return {}
 
         return read_json(self.selection_config_path)
+
+    def adaptive_config(self):
+        """
+        Read the settings of the adaptive experiments. Only the plugins that have settings need them,
+        so a file that is not there is not a broken configuration.
+        :return: dict of adaptive function name to its settings, empty when the file does not exist
+        """
+        if not File.Exists(self.adaptive_config_path):
+            log("No adaptive experiment settings: {} does not exist".format(self.adaptive_config_path))
+
+            return {}
+
+        return read_json(self.adaptive_config_path)

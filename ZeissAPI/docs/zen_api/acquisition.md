@@ -193,7 +193,7 @@ There is no scripting API for it, and the FCS assemblies (`Zeiss.Micro.LSM.FCS*`
 from `Zen`, so `dump_zen_api.czmac` never shows them. `diagnostics/probe_fcs_live_counts.czmac` lists
 them. The live values are read from the detector counting panel on screen: its `DataContext` in the
 WPF visual tree is an `FcsDetectorCountingViewModel`, with `CountRateValues` (entries with a string
-`Value`, such as `37.568 kHz`) and a settable `SelectedCountingMethod`. `ZenApi.fcs_count_rate` does
+`Value`, such as `37.568 kHz`) and a settable `SelectedCountingMethod`. `ZenApi.fcs_panel_reading` does
 this; the details are at the top of `zen_lib/zen_api.py`. Measured on an LSM 880, ZEN 2 blue:
 
 - `Execute` keeps the UI thread running, so a second thread can read while the macro waits.
@@ -202,6 +202,8 @@ this; the details are at the top of `zen_lib/zen_api.py`. Measured on an LSM 880
 - Right after a large drop in power the panel showed the old level for over a second, so take the
   last value of a measurement, not the first.
 - Counts per molecule needs the panel's averaging set, or it jumps around, down to negative values.
+- The panel shows one method at a time, so `with_cpm=True` alternates between the two. Repeated
+  switching is not measured yet: one switch within a measurement is.
 
 ### AutoSave
 

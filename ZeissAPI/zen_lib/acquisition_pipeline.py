@@ -50,6 +50,9 @@ class AcquisitionPipeline:
         self.post_reanalysis_experiments = post_reanalysis_experiments or []
         self.adaptive_experiments = adaptive_experiments or {}
 
+        # Read once, so that a run keeps the settings it started with
+        self.adaptive_settings = config.adaptive_config()
+
         # Initializing objects for the directories management for reading/saving the results and for initializing python
         # with the arguments. Both receive the already loaded configuration.
         self.path_manager = PathManager(self.config)
@@ -290,7 +293,8 @@ class AcquisitionPipeline:
             log('Doing adaptive experiment {} on {}'.format(adaptive.__name__, exp_item))
 
             adaptive(AdaptiveContext(self.zeiss_api, exp_item, self._result_id(obj_id), stage, obj, name,
-                                     self.path_manager))
+                                     self.path_manager, self.adaptive_settings.get(adaptive.__name__, {}),
+                                     self.config.surface_offsets))
 
             log('Rewrote experiment {} with {}'.format(exp_item, adaptive.__name__))
 

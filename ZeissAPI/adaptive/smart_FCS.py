@@ -12,26 +12,36 @@ from zen_lib.adaptive_loader import register_adaptive
 
 
 ###################### what it does ####################################################################
-# Sets the laser power of an FCS experiment so that its count rate comes out at the target, the way
+# Sets the laser power of an FCS experiment from at most two short measurements, the way
 # smart_SLB_imaging does it for an image:
 #
-#   1. run SMART_FCS_SCAN_EXPERIMENT, a short FCS measurement, at the first power and read the count
-#      rate from ZEN's detector counting panel
-#   2. the count rate follows the power, so power = first * target / count rate. Close enough to the
-#      target already and it stops here
-#   3. otherwise one more short measurement at that power, and the same step once more
-#   4. set that power in the experiment; the pipeline then runs it
+#   1. focus, as the focus setting says
+#   2. run scan_experiment, a short FCS measurement, at first_power and read ZEN's detector counting panel
+#   3. work out the next power from the mode. Close enough to the power just used and it stops here
+#   4. otherwise one more short measurement at that power, and the same step once more
+#   5. set that power in the experiment; the pipeline then runs it
 #
-# The limit is the count rate that must not be passed. The target has to sit below it, so a reading
-# above the limit only means the power goes down; it is written to the log and the record. The very
-# first reading can pass it, as it is one short measurement at a power chosen before seeing the sample.
+# The settings are the "smart_FCS" entry of config/adaptive_config.json:
+#
+#   mode            "constant_cpm": the same counts per molecule in every well, target_cpm_khz, which
+#                   needs a longer scan. "constant_counts": the same count rate, target_khz
+#   limit_khz       the power is held to what keeps the count rate at this, in both modes, assuming it
+#                   follows the power, so the last step can pass it by a few percent. In a
+#                   concentrated well it is the limit that decides the power, not the CPM. The very first
+#                   reading can pass it, as it is made at a power chosen before seeing the sample
+#   focus           "none", "surface" for Definite Focus, or "surface_offset" for Definite Focus and the
+#                   offset of the objective from surface_offsets in path_config.json. A bilayer needs the
+#                   offset; in solution it would put the spot at the level of the bilayer, on the glass
+#   tolerance       a step smaller than this fraction of the power ends the search
+#   min_signal_khz  below this the reading is "no signal", the step would run away
+#   min_power, max_power, in %. Keep max_power low: a CPM read too low must not drive the power into
+#                   saturation
 #
 # Before running: open the detector counting panel with its averaging set as wanted, and make
-# SMART_FCS_SCAN_EXPERIMENT run for about 6 s - the panel gives its first fresh value after about 3.8 s.
-# Without the panel, or with no signal, the power of the experiment stays as it is.
-#
-# Reading the panel is ZenApi.fcs_count_rate; the route was measured with
-# diagnostics/probe_fcs_live_values.czmac, on an LSM 880 with ZEN 2 blue.
+# scan_experiment run for about 10 s with constant_cpm and 6 s with constant_counts - the panel gives its
+# first fresh value after about 3.8 s and then shows the two values in turn. It has to see the sample the
+# way the experiment does, so the same detector, filters and pinhole: a scan on another detector read
+# 4.9 times too low. Without the panel, or with no signal, the experiment runs at its own power.
 #
 # The power is changed in memory only, never in the .czexp. It stays at the last value after the run,
 # so do not save the experiments from ZEN afterwards unless that is what you want. The short
@@ -39,83 +49,136 @@ from zen_lib.adaptive_loader import register_adaptive
 # moved to the results. smart_FCS.json next to it records the readings the power was chosen from.
 
 
-###################### settings ########################################################################
+###################### state, empty at every macro run ################################################
 
-SMART_FCS_FIRST_POWER = 1.0         # % - where a person would start on this sample
-SMART_FCS_TARGET_KHZ = 40.0         # count rate the experiment should run at
-SMART_FCS_LIMIT_KHZ = 50.0          # count rate that must not be passed
-
-SMART_FCS_SCAN_EXPERIMENT = "scan_FCS"
-SMART_FCS_LASER_LINE = "MTBLKM980LaserLine639"
-
-SMART_FCS_TOLERANCE = 0.1           # within this fraction of the target no more measurements are made
-SMART_FCS_MIN_SIGNAL_KHZ = 1.0      # below this the reading is "no signal", the step would run away
-SMART_FCS_MIN_POWER = 0.01          # %
-SMART_FCS_MAX_POWER = 10.0          # %
+# The power each experiment came with. Read once, because after the first well the experiment holds
+# the power of the well before it
+_SMART_FCS_OWN_POWER = {}
 
 
 ###################### helpers ########################################################################
 
 
-def _smart_fcs_step(power, count_rate):
+def _smart_fcs_focus(ctx):
     """
-    The power that should bring the count rate to the target, assuming that it follows the power.
-    :return: power in %, within the allowed range
+    Focuses as the settings say. A failure leaves the focus where it is, the measurement still runs.
     """
-    target = min(SMART_FCS_TARGET_KHZ, SMART_FCS_LIMIT_KHZ)
-    power = power * target / count_rate
+    zen_api = ctx.zen_api
+    focus = ctx.settings["focus"]
 
-    return round(min(max(power, SMART_FCS_MIN_POWER), SMART_FCS_MAX_POWER), 4)
+    if focus == "none":
+        return
+
+    try:
+        surface = zen_api.find_surface()
+
+        if focus == "surface_offset":
+            magnification = str(zen_api.objective_magnification())
+
+            if magnification not in ctx.surface_offsets:
+                log("smart_FCS: WARNING - no surface offset for a {}x objective, staying on the "
+                    "surface".format(magnification))
+                return
+
+            zen_api.move_focus(surface + ctx.surface_offsets[magnification])
+
+    except Exception as error:
+        log("smart_FCS: focusing failed, staying at the current z - {}".format(error))
 
 
-def _smart_fcs_close_enough(count_rate):
-    return abs(count_rate - SMART_FCS_TARGET_KHZ) <= SMART_FCS_TOLERANCE * SMART_FCS_TARGET_KHZ
+def _smart_fcs_step(settings, power, reading):
+    """
+    The next power, assuming that the count rate and the CPM follow the power.
+    :return: power in %, within the limit and the allowed range
+    :raise ValueError: when the mode is not known
+    """
+    mode = settings["mode"]
+    count_rate = reading["count_rate_khz"]
+
+    if mode == "constant_counts":
+        wanted = power * settings["target_khz"] / count_rate
+
+    elif mode == "constant_cpm":
+        cpm = reading["cpm_khz"]
+
+        # With no CPM the power can only be held, the limit below still applies
+        wanted = power * settings["target_cpm_khz"] / cpm if cpm is not None and cpm > 0 else power
+
+    else:
+        raise ValueError("unknown mode {}".format(mode))
+
+    wanted = min(wanted, power * settings["limit_khz"] / count_rate)
+    allowed = min(max(wanted, settings["min_power"]), settings["max_power"])
+
+    if allowed != wanted:
+        log("smart_FCS: {:.4f} % is outside {} - {} %".format(
+            wanted, settings["min_power"], settings["max_power"]))
+
+    return round(allowed, 4)
 
 
-def _smart_fcs_usable(count_rate):
-    return count_rate is not None and count_rate >= SMART_FCS_MIN_SIGNAL_KHZ
+def _smart_fcs_close_enough(settings, power, next_power):
+    return abs(next_power - power) <= settings["tolerance"] * power
 
 
-def _smart_fcs_measure(zen_api, power, readings):
+def _smart_fcs_usable(settings, reading):
+    return reading["count_rate_khz"] is not None and reading["count_rate_khz"] >= settings["min_signal_khz"]
+
+
+def _smart_fcs_measure(ctx, power, readings):
     """
     One short measurement at the power, recorded in readings.
-    :return: float count rate in kHz, or None when the panel gave none
+    :return: dict with count_rate_khz and cpm_khz, None for what the panel did not give
     """
-    zen_api.load_experiment(SMART_FCS_SCAN_EXPERIMENT)
-    zen_api.set_laser_power(SMART_FCS_SCAN_EXPERIMENT, SMART_FCS_LASER_LINE, power)
+    zen_api = ctx.zen_api
+    settings = ctx.settings
+    scan = settings["scan_experiment"]
 
-    count_rate = zen_api.fcs_count_rate(SMART_FCS_SCAN_EXPERIMENT)
-    readings.append({"power_percent": power, "count_rate_khz": count_rate})
-    log("smart_FCS: {} % -> {} kHz".format(power, count_rate))
+    zen_api.load_experiment(scan)
+    zen_api.set_laser_power(scan, settings["laser_line"], power)
 
-    if count_rate is not None and count_rate > SMART_FCS_LIMIT_KHZ:
-        log("smart_FCS: WARNING - above the limit of {} kHz".format(SMART_FCS_LIMIT_KHZ))
+    reading = zen_api.fcs_panel_reading(scan, with_cpm=settings["mode"] == "constant_cpm")
+    count_rate = reading["count_rate_khz"]
+    cpm = reading["cpm_khz"]
 
-    return count_rate
+    readings.append({"power_percent": power, "count_rate_khz": count_rate, "cpm_khz": cpm,
+                     "molecules": count_rate / cpm if count_rate is not None and cpm else None})
+    log("smart_FCS: {} % -> {} kHz, CPM {} kHz".format(power, count_rate, cpm))
+
+    if count_rate is not None and count_rate > settings["limit_khz"]:
+        log("smart_FCS: WARNING - above the limit of {} kHz".format(settings["limit_khz"]))
+
+    return reading
 
 
-def _smart_fcs_find_power(zen_api, readings):
+def _smart_fcs_find_power(ctx, readings):
     """
-    The power for the target from at most two short measurements.
+    The power from at most two short measurements.
     :return: power in %, or None when no usable reading came from the first one
     """
-    power = SMART_FCS_FIRST_POWER
-    count_rate = _smart_fcs_measure(zen_api, power, readings)
+    settings = ctx.settings
 
-    if not _smart_fcs_usable(count_rate):
+    power = settings["first_power"]
+    reading = _smart_fcs_measure(ctx, power, readings)
+
+    if not _smart_fcs_usable(settings, reading):
         return None
 
-    if _smart_fcs_close_enough(count_rate):
+    next_power = _smart_fcs_step(settings, power, reading)
+
+    if _smart_fcs_close_enough(settings, power, next_power):
         return power
 
-    power = _smart_fcs_step(power, count_rate)
-    count_rate = _smart_fcs_measure(zen_api, power, readings)
+    power = next_power
+    reading = _smart_fcs_measure(ctx, power, readings)
 
     # The first step is still the best estimate when the second reading gives nothing
-    if not _smart_fcs_usable(count_rate) or _smart_fcs_close_enough(count_rate):
+    if not _smart_fcs_usable(settings, reading):
         return power
 
-    return _smart_fcs_step(power, count_rate)
+    next_power = _smart_fcs_step(settings, power, reading)
+
+    return power if _smart_fcs_close_enough(settings, power, next_power) else next_power
 
 
 ###################### the adaptive experiment ########################################################
@@ -124,43 +187,54 @@ def _smart_fcs_find_power(zen_api, readings):
 @register_adaptive
 def smart_FCS(ctx):
     """
-    Chooses the laser power of the FCS experiment from at most two short measurements, so that its
-    count rate comes out at SMART_FCS_TARGET_KHZ. ctx.obj is not used: the power depends on the spot,
-    not on an object, so the function works the same with and without object finding.
+    Chooses the laser power of the FCS experiment from at most two short measurements, as the settings
+    in adaptive_config.json say. ctx.obj is not used: the power depends on the spot, not on an object,
+    so the function works the same with and without object finding.
     """
     zen_api = ctx.zen_api
     experiment = ctx.experiment
+    settings = ctx.settings
+
+    if not settings:
+        log("smart_FCS: no entry in adaptive_config.json - power left unchanged")
+        return
+
+    laser_line = settings["laser_line"]
+
+    _smart_fcs_focus(ctx)
 
     zen_api.activate_experiment(experiment)
 
-    if zen_api.get_laser_power(experiment, SMART_FCS_LASER_LINE) is None:
-        log("smart_FCS: {} has no {} - power left unchanged".format(experiment, SMART_FCS_LASER_LINE))
+    power_now = zen_api.get_laser_power(experiment, laser_line)
+
+    if power_now is None:
+        log("smart_FCS: {} has no {} - power left unchanged".format(experiment, laser_line))
         return
 
+    own_power = _SMART_FCS_OWN_POWER.setdefault(experiment, power_now)
     readings = []
 
     try:
-        chosen = _smart_fcs_find_power(zen_api, readings)
+        chosen = _smart_fcs_find_power(ctx, readings)
     except Exception as error:
         chosen = None
-        log("smart_FCS: {} - power left unchanged".format(error))
+        log("smart_FCS: {} - no power chosen".format(error))
 
     zen_api.activate_experiment(experiment)
 
     if chosen is None:
-        log("smart_FCS: WARNING - no usable count rate, empty spot or out of focus? {} stays at its own "
-            "power".format(experiment))
+        zen_api.set_laser_power(experiment, laser_line, own_power)
+        log("smart_FCS: WARNING - no usable count rate, weak sample, empty spot or out of focus? {} runs at "
+            "its own {} %".format(experiment, own_power))
     else:
-        chosen = zen_api.set_laser_power(experiment, SMART_FCS_LASER_LINE, chosen)
-        log("smart_FCS: set {} to {} %".format(SMART_FCS_LASER_LINE, chosen))
+        chosen = zen_api.set_laser_power(experiment, laser_line, chosen)
+        log("smart_FCS: set {} to {} %".format(laser_line, chosen))
 
     record = {
         "experiment": experiment,
-        "scan_experiment": SMART_FCS_SCAN_EXPERIMENT,
-        "laser_line": SMART_FCS_LASER_LINE,
-        "first_power_percent": SMART_FCS_FIRST_POWER,
-        "target_khz": SMART_FCS_TARGET_KHZ,
-        "limit_khz": SMART_FCS_LIMIT_KHZ,
+        "settings": settings,
+        "focus_z": zen_api.focus_z(),
+        "own_power_percent": own_power,
         "readings": readings,
         "chosen_power_percent": chosen,
     }

@@ -1,0 +1,12 @@
+{"smart_FCS": {"mode": "constant_cpm",
+               "scan_experiment": "FCS_scan",
+               "laser_line": "MTBLKM980LaserLine639",
+               "focus": "surface",
+               "first_power": 0.5,
+               "target_khz": 25.0,
+               "target_cpm_khz": 5.0,
+               "limit_khz": 50.0,
+               "tolerance": 0.1,
+               "min_signal_khz": 1.0,
+               "min_power": 0.01,
+               "max_power": 1.0}}

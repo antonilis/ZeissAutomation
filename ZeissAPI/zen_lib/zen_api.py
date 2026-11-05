@@ -58,7 +58,14 @@ except Exception as _error:
 #     run for longer than that
 #
 # The early values of a measurement are not reliable: right after a large drop in power the panel
-# showed the old level for over a second. The reader therefore keeps the LAST fresh value.
+# showed the old level for over a second, in one measurement until about 5 s after the start. The
+# reading therefore keeps the LAST fresh value.
+#
+# The panel shows one method at a time. Reading the count rate first and counts per molecule after it
+# took the count rate from those unreliable early values, so with counts per molecule the panel
+# alternates between the two, and each keeps its last value. The reading right after a switch is
+# skipped, because it may still show the other method. Switching once within a measurement was
+# measured; switching repeatedly was not, the first run with it is what verifies it.
 
 # System.Windows is not loaded into ZEN's IronPython by default. Guarded, because a failure here must
 # never stop an acquisition that does not read the panel; reading it then raises a NameError.
@@ -105,16 +112,17 @@ def _find_fcs_view_model():
     return None
 
 
-def _fcs_count_rate_method(view_model):
+def _fcs_method(view_model, word):
     """
-    :return: the member of the DetectorCountingMethod enum that shows the count rate
+    :param str word: part of the name of the method, in lower case
+    :return: the member of the DetectorCountingMethod enum with word in its name
     :raise ValueError: when the enum has no such member
     """
     for method in Enum.GetValues(view_model.SelectedCountingMethod.GetType()):
-        if "countrate" in str(method).lower():
+        if word in str(method).lower():
             return method
 
-    raise ValueError("the detector counting panel has no count rate method")
+    raise ValueError("the detector counting panel has no {} method".format(word))
 
 
 def _parse_khz(text):
@@ -126,90 +134,6 @@ def _parse_khz(text):
         return float(text.split()[0].replace(",", "."))
     except (IndexError, ValueError):
         return None
-
-
-class _FcsCountRateReader:
-    """
-    Reads the panel from a second thread while something else keeps the macro's thread busy.
-
-    param view_model: the FcsDetectorCountingViewModel from _find_fcs_view_model
-    """
-
-    def __init__(self, view_model):
-
-        self.view_model = view_model
-        self.stop = False
-        self.fresh = False
-        self.count_rate = None
-        self.stale = None       # what the panel showed before the start
-        self.seen = []          # everything it showed, for the log when no value came
-
-    def _values(self):
-        return [str(entry.Value) for entry in self.view_model.CountRateValues]
-
-    def _tick(self):
-        """
-        One reading, on the UI thread. An exception here must end neither the thread nor the
-        measurement, so a reading that fails counts as no reading.
-        """
-        try:
-            values = self._values()
-
-            if values not in self.seen:
-                self.seen.append(values)
-
-            if len(values) == 0 or values != self.stale:
-                self.fresh = True
-
-            if len(values) == 0:
-                return
-
-            number = _parse_khz(values[0])
-
-            if self.fresh and number is not None:
-                self.count_rate = number
-
-        except Exception:
-            pass
-
-    def _loop(self):
-        dispatcher = Application.Current.Dispatcher
-
-        for index in xrange(FCS_MAX_SAMPLES):
-            if self.stop:
-                return
-
-            operation = dispatcher.BeginInvoke(DispatcherPriority.Normal, Action(self._tick))
-
-            if operation.Wait(TimeSpan.FromSeconds(FCS_UI_WAIT_SECONDS)) != DispatcherOperationStatus.Completed:
-                operation.Abort()
-
-            time.sleep(FCS_SAMPLE_SECONDS)
-
-    def read_during(self, measurement):
-        """
-        :param measurement: function without arguments that runs the measurement and returns at its end
-        :return: float the last fresh count rate in kHz, or None when the panel gave none
-        """
-        self.stale = self._values()
-
-        thread = Thread(ThreadStart(self._loop))
-        thread.IsBackground = True
-        thread.Start()
-
-        try:
-            measurement()
-        finally:
-            self.stop = True
-            thread.Join(TimeSpan.FromSeconds(FCS_UI_WAIT_SECONDS + FCS_SAMPLE_SECONDS + 1))
-
-        # The macro runs on the UI thread, so this reading needs no hand-over
-        self._tick()
-
-        if self.count_rate is None:
-            log("fcs_count_rate: no fresh value, the panel showed {}".format(self.seen))
-
-        return self.count_rate
 
 
 ###################### the ZEN runtime, handed over by the macro ######################################
@@ -248,7 +172,7 @@ class ZenApi:
         # it creates nothing and touches no file, so there is nothing to delay.
         self.path_manager = PathManager(config)
 
-        # The view model of the FCS detector counting panel, found once per run, see fcs_count_rate
+        # The view model of the FCS detector counting panel, found once per run, see fcs_panel_reading
         self.fcs_view_model = None
 
     ###################### stage and focus #############################################################
@@ -437,15 +361,77 @@ class ZenApi:
 
     ###################### FCS count rate ##############################################################
 
-    def fcs_count_rate(self, experiment_name):
+    def _fcs_panel_values(self):
+        return [str(entry.Value) for entry in self.fcs_view_model.CountRateValues]
+
+    def _fcs_panel_tick(self, reading):
         """
-        Runs an FCS experiment and reads its count rate live from ZEN's detector counting panel, which
-        has to be open. Measured with diagnostics/probe_fcs_live_values.czmac, see the top of this file.
+        One reading of the panel, on the UI thread. An exception here must end neither the thread nor
+        the measurement, so a reading that fails counts as no reading.
+        :param dict reading: the state of the reading, see fcs_panel_reading
+        """
+        try:
+            values = self._fcs_panel_values()
+
+            if values not in reading["seen"]:
+                reading["seen"].append(values)
+
+            if len(values) == 0 or values != reading["stale"]:
+                reading["fresh"] = True
+
+            if len(values) == 0:
+                return
+
+            if reading["skip"]:
+                reading["skip"] = False
+                return
+
+            number = _parse_khz(values[0])
+
+            if not reading["fresh"] or number is None:
+                return
+
+            showing_count_rate = str(self.fcs_view_model.SelectedCountingMethod) == str(reading["count_method"])
+
+            if showing_count_rate:
+                reading["count_rate_khz"] = number
+            else:
+                reading["cpm_khz"] = number
+
+            if reading["cpm_method"] is not None:
+                self.fcs_view_model.SelectedCountingMethod = (
+                    reading["cpm_method"] if showing_count_rate else reading["count_method"])
+                reading["skip"] = True
+
+        except Exception:
+            pass
+
+    def _fcs_panel_loop(self, reading):
+        dispatcher = Application.Current.Dispatcher
+
+        for index in xrange(FCS_MAX_SAMPLES):
+            if reading["stop"]:
+                return
+
+            operation = dispatcher.BeginInvoke(DispatcherPriority.Normal,
+                                               Action(lambda: self._fcs_panel_tick(reading)))
+
+            if operation.Wait(TimeSpan.FromSeconds(FCS_UI_WAIT_SECONDS)) != DispatcherOperationStatus.Completed:
+                operation.Abort()
+
+            time.sleep(FCS_SAMPLE_SECONDS)
+
+    def fcs_panel_reading(self, experiment_name, with_cpm=False):
+        """
+        Runs an FCS experiment and reads ZEN's detector counting panel, which has to be open, live from
+        a second thread. Measured with diagnostics/probe_fcs_live_values.czmac, see the top of this file.
         The panel is put back on the method it showed. The view model is found once and kept: that is
         how it read seven measurements in a row, while searching again before every measurement read
         the first one and then nothing, probably because the windows then hold more than one.
         :param str experiment_name: name of the experiment as saved in ZEN
-        :return: float the last count rate of the measurement in kHz, or None when the panel gave none
+        :param bool with_cpm: also read counts per molecule, which the experiment needs longer for
+        :return: dict with the last count_rate_khz and cpm_khz of the measurement, None for a value the
+        panel did not give
         :raise ValueError: when the panel is not open
         """
         if self.fcs_view_model is None:
@@ -458,17 +444,40 @@ class ZenApi:
 
         experiment = self.zen.Acquisition.Experiments.GetByName(experiment_name)
         original_method = view_model.SelectedCountingMethod
-        view_model.SelectedCountingMethod = _fcs_count_rate_method(view_model)
+
+        reading = {"count_method": _fcs_method(view_model, "countrate"),
+                   "cpm_method": _fcs_method(view_model, "molecule") if with_cpm else None,
+                   "count_rate_khz": None, "cpm_khz": None, "stop": False, "fresh": False, "skip": False,
+                   "stale": None,   # what the panel showed before the start
+                   "seen": []}      # everything it showed, for the log when no value came
+
+        view_model.SelectedCountingMethod = reading["count_method"]
 
         try:
-            count_rate = _FcsCountRateReader(view_model).read_during(
-                lambda: self.zen.Acquisition.Execute(experiment))
+            reading["stale"] = self._fcs_panel_values()
+
+            thread = Thread(ThreadStart(lambda: self._fcs_panel_loop(reading)))
+            thread.IsBackground = True
+            thread.Start()
+
+            try:
+                self.zen.Acquisition.Execute(experiment)
+            finally:
+                reading["stop"] = True
+                thread.Join(TimeSpan.FromSeconds(FCS_UI_WAIT_SECONDS + FCS_SAMPLE_SECONDS + 1))
+
+            # The macro runs on the UI thread, so this reading needs no hand-over
+            self._fcs_panel_tick(reading)
+
         finally:
             view_model.SelectedCountingMethod = original_method
 
+        if reading["count_rate_khz"] is None or (with_cpm and reading["cpm_khz"] is None):
+            log("fcs_panel_reading: a value is missing, the panel showed {}".format(reading["seen"]))
+
         time.sleep(2)  # Rest for hardware adjustment
 
-        return count_rate
+        return {"count_rate_khz": reading["count_rate_khz"], "cpm_khz": reading["cpm_khz"]}
 
     ###################### pixels ######################################################################
 

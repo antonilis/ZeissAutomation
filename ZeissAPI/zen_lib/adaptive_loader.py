@@ -55,9 +55,13 @@ class AdaptiveContext:
     param str name: name of the overview point
     param PathManager path_manager: builds the result folder, so that a plugin's own files land next
     to what the experiment produces
+    param dict settings: the entry of this adaptive function in adaptive_config.json, empty without one
+    param dict surface_offsets: um from the Definite Focus surface to the sample, with the objective
+    magnification as a string for the key, from path_config.json of this microscope
     """
 
-    def __init__(self, zen_api, experiment, obj_id, stage, obj, name, path_manager):
+    def __init__(self, zen_api, experiment, obj_id, stage, obj, name, path_manager, settings,
+                 surface_offsets):
 
         self.zen_api = zen_api
         self.experiment = experiment
@@ -66,6 +70,8 @@ class AdaptiveContext:
         self.obj = obj
         self.name = name
         self.path_manager = path_manager
+        self.settings = settings
+        self.surface_offsets = surface_offsets
 
     def result_dir(self):
         """

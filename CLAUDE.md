@@ -122,8 +122,9 @@ If you need a new path, add a key to `path_config.json` and surface it as an att
   its own folder.
 - `ZeissAPI/zen_lib/path_manager_main_macro.py` — every result path and filename is built here. Do not build paths inline.
 - `ZeissAPI/zen_lib/execute_python.py` — the subprocess bridge.
-- `ZeissAPI/config/` — machine paths (`path_config.json`), named analysis presets
-  (`processing_config.json`) and named object selection presets (`selection_config.json`).
+- `ZeissAPI/config/` — machine paths and surface offsets (`path_config.json`), named analysis presets
+  (`processing_config.json`), named object selection presets (`selection_config.json`) and the
+  settings of the adaptive experiments (`adaptive_config.json`).
 - `data_processing/main_processor.py` — World B entry point.
 - `data_processing/image_analysis/` — pluggable analysers, auto-registered (see below).
 - `data_processing/object_selection/` — pluggable second stage that rejects found objects,
@@ -168,7 +169,9 @@ top of a GUV, using the radius the analysis measured.
    own name is what the ZEN dropdown offers, the same way a class name is on the analysis side.
 3. The function takes one argument, an `AdaptiveContext`: `ctx.zen_api`, `ctx.experiment` (the
    name of the experiment about to run), `ctx.obj`, `ctx.obj_id`, `ctx.stage`, `ctx.name` and
-   `ctx.result_dir()` for the plugin's own files. **`ctx.obj` is `None` whenever object finding is
+   `ctx.result_dir()` for the plugin's own files, `ctx.settings` (its entry in
+   `adaptive_config.json`, keyed by the function's name, read once per run) and
+   `ctx.surface_offsets` (per microscope, from `path_config.json`). **`ctx.obj` is `None` whenever object finding is
    switched off** — there is no object then, the macro is only visiting overview points — so a
    plugin must handle both. `fcs_zscan` falls back to a radius of zero and centres its scan on the
    current focus. Keywords after `ctx` are for other plugins only: `smart_SLB_imaging` imports
