@@ -10,22 +10,39 @@
 # repo, with zen_lib/ next to it). Copy it there for the run, and delete it there afterwards.
 #
 ###################### what this probe answers #########################################################
-# guv_top_stack moves the focus and expects the z-stack of the next experiment to run around it:
+# A z-stack in centre mode runs around the centre last set with the Center button of the Z-Stack tool,
+# not around the current focus. guv_top_stack needs to move that centre. Three ways are tried:
 #
-#   1. does a z-stack in centre mode follow a focus moved by a macro?
-#   2. which z-stack settings can a macro see in experiment.Core?
+#   A. what the z-stack setup offers in experiment.Core, read only
+#   B. pressing the Center button from the macro, the way smart_FCS reaches a panel through WPF
+#   C. one single position with the wanted z, in case the stack centres on the position
 #
-# It runs the experiment twice, at the current focus and FOCUS_MOVE_UM above it, with the calls the
-# pipeline uses, and saves both stacks. compare_center_probe.py then measures their real shift.
+# Stack 0 is the reference, B and C aim FOCUS_MOVE_UM above it. compare_center_probe.py then measures the
+# real shifts of probe_center_1.czi (B) and probe_center_2.czi (C) against probe_center_0.czi.
 #
-# Before running: the experiment has to be saved in centre mode, and a GUV has to be in the field, with
-# its membrane in the middle of the stack. Nothing but the focus moves, and the focus goes back at the
-# end, also after an error. Experiment settings are only read.
+# Before running:
+#   - the experiment is active, with the Z-Stack tool OPEN on the left, or its button cannot be found
+#   - a GUV is in the field, with its membrane in focus
+#   - press Center by hand once, this is the reference
+#
+# A button is pressed only when exactly one candidate lies inside the Z-Stack tool, so that the Center of
+# another tool cannot be pressed by mistake. Only the focus moves, and it goes back at the end, also
+# after an error. The positions are added in memory and removed again. The experiment is not saved - if
+# ZEN later asks whether to save changes to it, answer No.
 
 import sys
 import time
 
+import clr
+clr.AddReference("PresentationCore")
+clr.AddReference("PresentationFramework")
+
 from System.IO import Directory, Path
+from System.Windows import Application
+from System.Windows.Media import VisualTreeHelper
+
+import Zeiss.Micro.LM.Scripting
+clr.ImportExtensions(Zeiss.Micro.LM.Scripting)
 
 for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
     del sys.modules[_cached]
@@ -38,7 +55,9 @@ from zen_lib.runtime_config import log
 EXPERIMENT = "GUV_top_stack"
 FOCUS_MOVE_UM = 4.0
 SAVE_FOLDER = "D:\\automation\\results\\probe_center"
-WORDS = ("center", "centre", "first", "last", "interval", "range", "slice", "zstack", "offset")
+Z_WORDS = ("zstack", "z-stack", "z_stack")
+CENTER_WORDS = ("center", "centre")
+MAX_REPORTED = 60
 
 
 ###################### reporting #######################################################################
@@ -55,70 +74,233 @@ def public(obj):
     return [name for name in dir(obj) if not name.startswith("_")]
 
 
-###################### 1. what a macro can see #########################################################
+def has_word(text, words):
+    text = str(text).lower()
+    return any(word in text for word in words)
 
 
-def report_z_members(label, obj):
+###################### A. what experiment.Core offers ##################################################
+
+
+def z_setups(experiment):
+    block = experiment.Core.CurrentExperimentBlock
+    return [setup for setup in block.SubDimensionSetups
+            if has_word(type(setup).__name__, Z_WORDS) or hasattr(setup, "IsCenterMode")]
+
+
+def report_members(label, obj):
     """
-    Every public member with a z-stack word in its name, with its value when it has a plain one.
+    Every public member with its value. Methods are listed with their signature.
     """
+    report("--- {} ({})".format(label, type(obj).__name__))
+
     for name in public(obj):
-        if not any(word in name.lower() for word in WORDS):
-            continue
-
         try:
             value = getattr(obj, name)
-            report("  {}.{} = {!r}".format(label, name, value if not callable(value) else "(method)"))
+
+            if callable(value):
+                report("  method {}: {}".format(name, str(getattr(value, "__doc__", ""))[:200].replace("\n", " | ")))
+            else:
+                report("  {} = {!r}".format(name, value))
         except Exception as error:
-            report("  {}.{} could not be read: {}".format(label, name, error))
+            report("  {} could not be read: {}".format(name, error))
 
 
-def report_z_settings(experiment):
-    block = experiment.Core.CurrentExperimentBlock
-    report_z_members("block", block)
+def report_z_values(label, experiment):
+    """
+    The few values that should change when the centre moves, for comparing before and after.
+    """
+    for setup in z_setups(experiment):
+        for name in public(setup):
+            if has_word(name, CENTER_WORDS + ("first", "last", "offset")):
+                try:
+                    value = getattr(setup, name)
+                    if not callable(value):
+                        report("{}: {} = {!r}".format(label, name, value))
+                except Exception as error:
+                    report("{}: {} could not be read: {}".format(label, name, error))
 
-    for setup in block.SubDimensionSetups:
-        label = type(setup).__name__
-        report("setup: {}".format(label))
-        report_z_members(label, setup)
+
+###################### B. the Center button ############################################################
 
 
-###################### 2. does the stack follow the focus ##############################################
+def element_text(element):
+    """
+    Everything that can name a control. The macro runs on the UI thread, so this needs no hand-over.
+    """
+    parts = []
+
+    for name in ("Name", "Content", "ToolTip", "Text", "Tag"):
+        try:
+            value = getattr(element, name, None)
+            if value is not None and str(value) != "":
+                parts.append("{}={}".format(name, str(value)[:60]))
+        except Exception:
+            pass
+
+    return " ".join(parts)
 
 
-def run_stack(number, focus):
-    Zen.Devices.Focus.MoveTo(focus)
-    time.sleep(2)
-    report("stack {}: focus asked {}, focus now {}".format(number, focus, Zen.Devices.Focus.ActualPosition))
+def walk_windows():
+    """
+    Every element of ZEN with whether it lies inside something called a z-stack, by its own type, its
+    name or its view model.
+    """
+    for window in Application.Current.Windows:
+        stack = [(window, False)]
 
+        while stack:
+            element, inside = stack.pop()
+
+            context = getattr(element, "DataContext", None)
+            tag = "{} {} {}".format(type(element).__name__, getattr(element, "Name", ""),
+                                    type(context).__name__ if context is not None else "")
+            inside = inside or has_word(tag, Z_WORDS)
+
+            yield element, context, inside
+
+            for index in xrange(VisualTreeHelper.GetChildrenCount(element)):
+                stack.append((VisualTreeHelper.GetChild(element, index), inside))
+
+
+def find_center_controls():
+    """
+    :return: list of the pressable elements inside the Z-Stack tool with a Center word on them
+    """
+    view_models, candidates, elsewhere = {}, [], 0
+
+    for element, context, inside in walk_windows():
+        if inside and context is not None:
+            view_models[type(context).__name__] = context
+
+        if not hasattr(element, "Command") and not hasattr(element, "IsPressed"):
+            continue
+
+        command_name = str(getattr(element, "Command", ""))
+
+        if has_word(element_text(element) + " " + command_name, CENTER_WORDS):
+            if inside:
+                candidates.append(element)
+            else:
+                elsewhere += 1
+
+    report("view models inside the Z-Stack tool: {}".format(sorted(view_models.keys())))
+
+    for name, model in sorted(view_models.items()):
+        commands = [member for member in public(model) if "command" in member.lower() or has_word(member, CENTER_WORDS)]
+        report("  {}: {}".format(name, commands[:MAX_REPORTED]))
+
+    report("Center buttons inside the Z-Stack tool: {}, outside it: {}".format(len(candidates), elsewhere))
+
+    for element in candidates:
+        report("  {} | {} | command {}".format(type(element).__name__, element_text(element),
+                                               getattr(element, "Command", None)))
+
+    return candidates
+
+
+def press(element):
+    command = getattr(element, "Command", None)
+
+    if command is not None:
+        parameter = getattr(element, "CommandParameter", None)
+        report("CanExecute: {}".format(command.CanExecute(parameter)))
+        command.Execute(parameter)
+        return "Command.Execute"
+
+    from System.Windows import RoutedEventArgs
+    from System.Windows.Controls.Primitives import ButtonBase
+
+    element.RaiseEvent(RoutedEventArgs(ButtonBase.ClickEvent))
+    return "Click event"
+
+
+###################### running a stack #################################################################
+
+
+def run_stack(number):
     Zen.Acquisition.Experiments.GetByName(EXPERIMENT).SetActive()
     time.sleep(2)
 
     started = time.time()
     Zen.Acquisition.Execute(Zen.Acquisition.Experiments.ActiveExperiment)
     time.sleep(2)
-    report("stack {}: took {:.1f} s, focus afterwards {}".format(number, time.time() - started,
-                                                                 Zen.Devices.Focus.ActualPosition))
 
     path = Path.Combine(SAVE_FOLDER, "probe_center_{}.czi".format(number))
     Zen.Application.Documents.ActiveDocument.Save(path)
-    report("stack {}: saved {}".format(number, path))
+    report("stack {}: took {:.1f} s, focus afterwards {}, saved {}".format(
+        number, time.time() - started, Zen.Devices.Focus.ActualPosition, path))
 
 
 ###################### run ############################################################################
 
-report("--- centre mode z-stack probe ---")
+report("--- centre mode z-stack probe 2 ---")
 Directory.CreateDirectory(SAVE_FOLDER)
 
-report_z_settings(Zen.Acquisition.Experiments.GetByName(EXPERIMENT))
+experiment = Zen.Acquisition.Experiments.GetByName(EXPERIMENT)
+experiment.SetActive()
 
+start_x, start_y = Zen.Devices.Stage.ActualPositionX, Zen.Devices.Stage.ActualPositionY
 start_focus = Zen.Devices.Focus.ActualPosition
-report("start focus {}".format(start_focus))
+report("start: x {}, y {}, focus {}".format(start_x, start_y, start_focus))
 
 try:
-    run_stack(0, start_focus)
-    run_stack(1, start_focus + FOCUS_MOVE_UM)
-    report("RESULT: both stacks saved. Run compare_center_probe.py on them with a move of {}".format(FOCUS_MOVE_UM))
+    # A
+    setups = z_setups(experiment)
+    report("A. z-stack setups in experiment.Core: {}".format([type(setup).__name__ for setup in setups]))
+
+    for setup in setups:
+        report_members("z-stack setup", setup)
+
+    # the reference, with the centre as it was set by hand
+    report_z_values("before anything", experiment)
+    run_stack(0)
+
+    # B
+    try:
+        report("B. the Center button")
+        candidates = find_center_controls()
+
+        if len(candidates) == 1:
+            Zen.Devices.Focus.MoveTo(start_focus + FOCUS_MOVE_UM)
+            time.sleep(2)
+            report("focus now {}".format(Zen.Devices.Focus.ActualPosition))
+
+            report_z_values("before pressing", experiment)
+            report("pressed with {}".format(press(candidates[0])))
+            time.sleep(1)
+            report_z_values("after pressing", experiment)
+
+            run_stack(1)
+        else:
+            report("B not pressed: it takes exactly one candidate, there are {}".format(len(candidates)))
+
+    except Exception as error:
+        report("B FAILED - {}".format(error))
+
+    Zen.Devices.Focus.MoveTo(start_focus)
+    time.sleep(2)
+
+    # C
+    try:
+        report("C. one single position, focus left at the start")
+        experiment.ClearExperimentRegionsAndPositions(0)
+        experiment.ClearTileRegionsAndPositions(0)
+        experiment.AddSinglePosition(blockIndex=0, x=start_x, y=start_y, z=start_focus + FOCUS_MOVE_UM)
+        report("positions: {}".format(experiment.GetSinglePositionInfos(0).Count))
+
+        report_z_values("with the position", experiment)
+        run_stack(2)
+
+    except Exception as error:
+        report("C FAILED - {}".format(error))
+
+    finally:
+        experiment.ClearExperimentRegionsAndPositions(0)
+        experiment.ClearTileRegionsAndPositions(0)
+        report("positions removed")
+
+    report("RESULT: compare probe_center_1.czi and probe_center_2.czi with probe_center_0.czi, move {}".format(FOCUS_MOVE_UM))
 
 except Exception as error:
     report("FAILED - {}".format(error))
@@ -128,7 +310,7 @@ finally:
     report("focus back at {}".format(Zen.Devices.Focus.ActualPosition))
 
 output = ZenWindow()
-output.Initialize("centre mode z-stack probe")
+output.Initialize("centre mode z-stack probe 2")
 output.AddMultiLineTextBox("report", "Also written to the log:", "\n".join(REPORT))
 output.Show()
 </Text>
