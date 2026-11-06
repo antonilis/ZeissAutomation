@@ -12,20 +12,21 @@ from zen_lib.adaptive_loader import register_adaptive
 
 
 ###################### what it does ####################################################################
-# Aims a z-stack at the top of a GUV before it runs. A GUV resting on the bottom has its top 2R above it:
+# Aims a z-stack at the top of a GUV before it runs. Definite Focus settles above the glass, at a height
+# where GUVs are already visible, so the top is expected about R above it:
 #
-#   1. Definite Focus finds the cover-slip surface         zen_api.find_surface()
-#   2. the bottom of the well is the surface plus the offset of the objective, from path_config.json
-#   3. focus to bottom + 2R + aim_offset_um
+#   1. Definite Focus                                      zen_api.find_surface()
+#   2. focus to that position + R + aim_offset_um
 #
 # The experiment has to be a z-stack in centre mode, which then runs around this focus. The analysis
 # GUVTopZScan reads the top from it.
 #
-# surface_offsets were measured on SLBs on another plate, so on a new plate this aim may be off by a few
-# um. guv_top_stack.json next to the results records the numbers needed to correct that afterwards.
+# The height Definite Focus settles at does not change with the size of a GUV, while the top does, so
+# how far this aim is off may depend on R. guv_top_stack.json next to the results records the numbers
+# needed to correct that afterwards.
 #
-# When there is no object, no offset for the objective or FindSurface fails, the focus goes back where it
-# was and the stack runs around it. A stack in the wrong place costs one object, not the plate.
+# When there is no object or FindSurface fails, the focus goes back where it was and the stack runs
+# around it. A stack in the wrong place costs one object, not the plate.
 
 
 ###################### settings ########################################################################
@@ -42,18 +43,14 @@ def guv_top_stack(ctx):
     """
     start_z = ctx.zen_api.focus_z()
     radius = ctx.obj['radius'] if ctx.obj else None
-    magnification = ctx.zen_api.objective_magnification()
 
-    record = {"start_z": start_z, "radius_um": radius, "objective_magnification": magnification,
+    record = {"start_z": start_z, "radius_um": radius, "objective_magnification": ctx.zen_api.objective_magnification(),
               "aim_offset_um": ctx.settings.get("aim_offset_um", 0.0)}
 
     reason = None
 
     if radius is None or radius > ctx.settings.get("max_radius_um", 200):
         reason = "no usable radius: {}".format(radius)
-
-    elif str(magnification) not in ctx.surface_offsets:
-        reason = "no surface offset for a {}x objective in path_config.json".format(magnification)
 
     else:
         try:
@@ -62,8 +59,7 @@ def guv_top_stack(ctx):
             reason = "FindSurface failed: {}".format(error)
 
     if reason is None:
-        record["z_bottom"] = record["z_surface"] + ctx.surface_offsets[str(magnification)]
-        record["z_aim"] = record["z_bottom"] + 2 * radius + record["aim_offset_um"]
+        record["z_aim"] = record["z_surface"] + radius + record["aim_offset_um"]
     else:
         record["z_aim"] = start_z
         log("guv_top_stack stays at the current focus: {}".format(reason))
