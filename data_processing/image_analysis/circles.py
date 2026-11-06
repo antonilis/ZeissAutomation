@@ -189,6 +189,10 @@ class Circles(ImageAnalysisTemplate):
 
         contour = cv2.ellipse2Poly((int(round(x)), int(round(y))), (int(round(radius)), int(round(radius))), 0, 0, 360, 5)
 
+        # a GUV cut by the border would otherwise get an outline larger than the part of it in the image
+        contour[:, 0] = np.clip(contour[:, 0], 0, image.shape[1] - 1)
+        contour[:, 1] = np.clip(contour[:, 1], 0, image.shape[0] - 1)
+
         return {"center": (float(x), float(y)), "radius": float(radius), "fit ratio": float(keep.mean()),
                 "contour": contour.reshape(-1, 1, 2)}
 
