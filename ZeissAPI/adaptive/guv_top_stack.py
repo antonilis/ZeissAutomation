@@ -12,20 +12,19 @@ from zen_lib.adaptive_loader import register_adaptive
 
 
 ###################### what it does ####################################################################
-# Aims a z-stack at the top of a GUV before it runs. Definite Focus settles above the glass, at a height
-# where GUVs are already visible, so the top is expected about R above it:
+# Aims a z-stack at the top of a GUV before it runs. GUVs rest on the bottom and Definite Focus settles a
+# few um above it, so the top lies about 2R minus that height above Definite Focus:
 #
 #   1. Definite Focus                                      zen_api.find_surface()
-#   2. focus to that position + R + aim_offset_um
+#   2. focus to that position + aim_slope * R + aim_offset_um
 #   3. the centre of the z-stack to the same z           zen_api.center_z_stack()
 #
 # Both have to move: the stack runs between the positions set in step 3 and not around the focus, while
 # the analysis GUVTopZScan counts from the focus stored in the image. The range and the interval stay
 # as saved in the experiment.
 #
-# The height Definite Focus settles at does not change with the size of a GUV, while the top does, so
-# how far this aim is off may depend on R. guv_top_stack.json next to the results records the numbers
-# needed to correct that afterwards.
+# Measured on 8 GUVs of 06.11, R 4.4-9.5 um on transmitted light: top - Definite Focus = 2.15 R - 6.26 um,
+# rms 0.18 um. guv_top_stack.json next to the results records the numbers needed to check that again.
 #
 # When there is no object or FindSurface fails, the focus goes back where it was and the stack runs
 # around it. A stack in the wrong place costs one object, not the plate.
@@ -34,7 +33,8 @@ from zen_lib.adaptive_loader import register_adaptive
 ###################### settings ########################################################################
 # The "guv_top_stack" entry of config/adaptive_config.json:
 #
-#   aim_offset_um    added to the aim, to correct it after looking at a run
+#   aim_slope        um of the aim per um of the radius of the object
+#   aim_offset_um    added to the aim
 #   max_radius_um    a larger radius is not trusted, the same check as in fcs_zscan
 
 
@@ -47,7 +47,7 @@ def guv_top_stack(ctx):
     radius = ctx.obj['radius'] if ctx.obj else None
 
     record = {"start_z": start_z, "radius_um": radius, "objective_magnification": ctx.zen_api.objective_magnification(),
-              "aim_offset_um": ctx.settings.get("aim_offset_um", 0.0)}
+              "aim_slope": ctx.settings.get("aim_slope", 2.0), "aim_offset_um": ctx.settings.get("aim_offset_um", 0.0)}
 
     reason = None
 
@@ -61,7 +61,7 @@ def guv_top_stack(ctx):
             reason = "FindSurface failed: {}".format(error)
 
     if reason is None:
-        record["z_aim"] = record["z_surface"] + radius + record["aim_offset_um"]
+        record["z_aim"] = record["z_surface"] + record["aim_slope"] * radius + record["aim_offset_um"]
     else:
         record["z_aim"] = start_z
         log("guv_top_stack stays at the current focus: {}".format(reason))
