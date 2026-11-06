@@ -18,6 +18,12 @@ Although originally designed for specific experimental setups, the framework is 
 
 ---
 
+## Requirements
+
+The analysis side runs on **Python 3.10.11**; install the packages from `requirements.txt`.
+
+---
+
 ## Key Features
 
 - 🔁 **Automated acquisition pipelines** for imaging and spectroscopy

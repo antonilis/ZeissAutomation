@@ -345,4 +345,17 @@ With an object selection, two more flags:
 World A cannot be run outside ZEN. `.czmac` files are XML wrappers — the Python source
 sits inside `<Text>` and must be XML-escaped (`&gt;`, `&lt;`, `&amp;`).
 
-<!-- TODO: fill in the venv activation command and test command for this machine. -->
+## Environment
+
+World B runs on **Python 3.10.11**, in the venv at `/media/dysk/MPI/Project/.venv` (outside the
+repo, next to `ZeissAutomation/`):
+
+```
+source /media/dysk/MPI/Project/.venv/bin/activate
+```
+
+It is built from `requirements.txt` with two changes on this machine: `torch==2.8.0+cpu` instead of
+the CUDA build, and `opencv-python-headless` only, because `opencv-python` overwrites the same files.
+Notebooks use the Jupyter kernel `zeiss-py310`, which this venv provides.
+
+<!-- TODO: fill in the test command for this machine. -->
