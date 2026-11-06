@@ -198,11 +198,19 @@ class Circles(ImageAnalysisTemplate):
         from the background in brightness, which is what fails on a low contrast or uneven field.
         :return: dictionary mapping indices to center position, radius, fit ratio and contour in pixel coordinates
         """
-        if self.image.ndim != 2:
-            print("Circles on transmitted light needs a single plane, got an image of shape", self.image.shape)
+        z_scan = self.metadata.get('z_scan') or {}
+
+        # the rim of a GUV hardly moves with z on transmitted light, so one plane of a z-stack is enough
+        if self.image.ndim == 3 and z_scan.get('is_activated'):
+            image = self.image[self.image.shape[0] // 2].astype(float)
+
+        elif self.image.ndim == 2:
+            image = self.image.astype(float)
+
+        else:
+            print("Circles on transmitted light needs a plane or a z-stack, got an image of shape", self.image.shape)
             return {}
 
-        image = self.image.astype(float)
         scaling = self.metadata['scaling_um_per_pixel']
         um_per_pixel = np.mean([scaling['X'], scaling['Y']]) * 10 ** 6
 

@@ -10,7 +10,13 @@ def visualize_points(ZIP_object, save_path=None):
     :param str save_path: path to which the png will be saved
     :return: None
     """
-    plt.imshow(ZIP_object.image_to_analyze, cmap='gray')
+    image = ZIP_object.image_to_analyze
+
+    # a z-stack is shown by its middle plane
+    if image.ndim == 3:
+        image = image[image.shape[0] // 2]
+
+    plt.imshow(image, cmap='gray')
 
     plt.colorbar()
     meas_points = ZIP_object.not_scaled_points
