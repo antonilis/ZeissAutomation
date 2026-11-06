@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### settings ########################################################################
+
+SHIFT_UM = 4.0      # how far the z-stack moves, negative moves it down
+
+###################### what this does ##################################################################
+# Moves First and Last of the z-stack of the ACTIVE experiment by SHIFT_UM, in memory. Look at the Z-Stack
+# tool to see whether it followed. Nothing is acquired, the focus does not move, and the experiment is not
+# saved. Run it again with the opposite SHIFT_UM to go back.
+
+experiment = Zen.Acquisition.Experiments.ActiveExperiment
+setups = [setup for setup in experiment.Core.CurrentExperimentBlock.SubDimensionSetups if hasattr(setup, "IsCenterMode")]
+
+if setups:
+    setup = setups[0]
+    before = (setup.First, setup.Last, setup.Interval)
+
+    setup.Define(before[0] + SHIFT_UM, before[1] + SHIFT_UM, before[2])
+
+    text = "Experiment: {}\nShift: {} um\nBefore: First {}, Last {}, Interval {}\nAfter: First {}, Last {}, Interval {}".format(
+        experiment.Name, SHIFT_UM, before[0], before[1], before[2], setup.First, setup.Last, setup.Interval)
+else:
+    text = "The active experiment {} has no z-stack".format(experiment.Name)
+
+output = ZenWindow()
+output.Initialize("Shift the z-stack")
+output.AddMultiLineTextBox("report", "Result:", text)
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>1</Row>
+  <Column>1</Column>
+</Script>
