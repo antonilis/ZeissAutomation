@@ -90,7 +90,9 @@ class GUVTopZScan(ImageAnalysisTemplate):
         if at_scan_edge:
             print("The top of the GUV is at the edge of the scan, plane", round(top, 1), "of", number_of_planes)
 
-        z_plane = top - centre_plane if self.metadata['z_scan']['is_center_mode'] else top
+        # counted from the centre in either mode of the z-stack: guv_top_stack and center_stack_on_focus both put the
+        # focus stored in the image at the centre of the stack
+        z_plane = top - centre_plane
 
         x, y = self.image.shape[2] / 2 - 1, self.image.shape[1] / 2 - 1
 
