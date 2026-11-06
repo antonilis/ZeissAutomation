@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>
+###################### where to put this file before running it ######################################
+# This is a diagnostic, kept out of the production macros in ZeissAPI/diagnostics/.
+# It imports zen_lib, so it only works from the folder main_macro.czmac runs from (ZeissAPI/ in the
+# repo, with zen_lib/ next to it). Copy it there for the run, and delete it there afterwards.
+#
+###################### what this probe answers #########################################################
+# guv_top_stack moves the focus and expects the z-stack of the next experiment to run around it:
+#
+#   1. does a z-stack in centre mode follow a focus moved by a macro?
+#   2. which z-stack settings can a macro see in experiment.Core?
+#
+# It runs the experiment twice, at the current focus and FOCUS_MOVE_UM above it, with the calls the
+# pipeline uses, and saves both stacks. compare_center_probe.py then measures their real shift.
+#
+# Before running: the experiment has to be saved in centre mode, and a GUV has to be in the field, with
+# its membrane in the middle of the stack. Nothing but the focus moves, and the focus goes back at the
+# end, also after an error. Experiment settings are only read.
+
+import sys
+import time
+
+from System.IO import Directory, Path
+
+for _cached in [_name for _name in sys.modules if _name == "zen_lib" or _name.startswith("zen_lib.")]:
+    del sys.modules[_cached]
+
+from zen_lib.runtime_config import log
+
+
+###################### settings ########################################################################
+
+EXPERIMENT = "GUV_top_stack"
+FOCUS_MOVE_UM = 4.0
+SAVE_FOLDER = "D:\\automation\\results\\probe_center"
+WORDS = ("center", "centre", "first", "last", "interval", "range", "slice", "zstack", "offset")
+
+
+###################### reporting #######################################################################
+
+REPORT = []
+
+
+def report(text):
+    REPORT.append(text)
+    log(text)
+
+
+def public(obj):
+    return [name for name in dir(obj) if not name.startswith("_")]
+
+
+###################### 1. what a macro can see #########################################################
+
+
+def report_z_members(label, obj):
+    """
+    Every public member with a z-stack word in its name, with its value when it has a plain one.
+    """
+    for name in public(obj):
+        if not any(word in name.lower() for word in WORDS):
+            continue
+
+        try:
+            value = getattr(obj, name)
+            report("  {}.{} = {!r}".format(label, name, value if not callable(value) else "(method)"))
+        except Exception as error:
+            report("  {}.{} could not be read: {}".format(label, name, error))
+
+
+def report_z_settings(experiment):
+    block = experiment.Core.CurrentExperimentBlock
+    report_z_members("block", block)
+
+    for setup in block.SubDimensionSetups:
+        label = type(setup).__name__
+        report("setup: {}".format(label))
+        report_z_members(label, setup)
+
+
+###################### 2. does the stack follow the focus ##############################################
+
+
+def run_stack(number, focus):
+    Zen.Devices.Focus.MoveTo(focus)
+    time.sleep(2)
+    report("stack {}: focus asked {}, focus now {}".format(number, focus, Zen.Devices.Focus.ActualPosition))
+
+    Zen.Acquisition.Experiments.GetByName(EXPERIMENT).SetActive()
+    time.sleep(2)
+
+    started = time.time()
+    Zen.Acquisition.Execute(Zen.Acquisition.Experiments.ActiveExperiment)
+    time.sleep(2)
+    report("stack {}: took {:.1f} s, focus afterwards {}".format(number, time.time() - started,
+                                                                 Zen.Devices.Focus.ActualPosition))
+
+    path = Path.Combine(SAVE_FOLDER, "probe_center_{}.czi".format(number))
+    Zen.Application.Documents.ActiveDocument.Save(path)
+    report("stack {}: saved {}".format(number, path))
+
+
+###################### run ############################################################################
+
+report("--- centre mode z-stack probe ---")
+Directory.CreateDirectory(SAVE_FOLDER)
+
+report_z_settings(Zen.Acquisition.Experiments.GetByName(EXPERIMENT))
+
+start_focus = Zen.Devices.Focus.ActualPosition
+report("start focus {}".format(start_focus))
+
+try:
+    run_stack(0, start_focus)
+    run_stack(1, start_focus + FOCUS_MOVE_UM)
+    report("RESULT: both stacks saved. Run compare_center_probe.py on them with a move of {}".format(FOCUS_MOVE_UM))
+
+except Exception as error:
+    report("FAILED - {}".format(error))
+
+finally:
+    Zen.Devices.Focus.MoveTo(start_focus)
+    report("focus back at {}".format(Zen.Devices.Focus.ActualPosition))
+
+output = ZenWindow()
+output.Initialize("centre mode z-stack probe")
+output.AddMultiLineTextBox("report", "Also written to the log:", "\n".join(REPORT))
+output.Show()
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>1</Row>
+  <Column>1</Column>
+</Script>
