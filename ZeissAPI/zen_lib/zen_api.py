@@ -302,6 +302,27 @@ class ZenApi:
 
         experiment.SetActive()
 
+    def center_z_stack(self, experiment_name, z):
+        """
+        Moves the z-stack of the experiment so that its centre is at z, keeping its range and interval.
+        A z-stack runs between absolute positions, the ones the Center button of the Z-Stack tool sets,
+        and not around the current focus. It lives in the internal .Core layer, like the laser power,
+        and the change is in memory only.
+        :param str experiment_name: name of the experiment as saved in ZEN
+        :param float z: focus position of the centre in micrometres
+        :return: tuple (first, last) of the z-stack after the change
+        """
+        experiment = self.zen.Acquisition.Experiments.GetByName(experiment_name)
+
+        for setup in experiment.Core.CurrentExperimentBlock.SubDimensionSetups:
+            if hasattr(setup, "IsCenterMode"):
+                half_range = (setup.Last - setup.First) / 2.0
+                setup.Define(z - half_range, z + half_range, setup.Interval)
+
+                return setup.First, setup.Last
+
+        raise ValueError("Experiment {} has no z-stack".format(experiment_name))
+
     ###################### laser power #################################################################
     # The power lives in the internal .Core layer, found along the path in docs/zen_api/acquisition.md.
     # It is unversioned, so this is the one place to fix after a ZEN update. The change is in memory

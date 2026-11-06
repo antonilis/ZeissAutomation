@@ -17,9 +17,11 @@ from zen_lib.adaptive_loader import register_adaptive
 #
 #   1. Definite Focus                                      zen_api.find_surface()
 #   2. focus to that position + R + aim_offset_um
+#   3. the centre of the z-stack to the same z           zen_api.center_z_stack()
 #
-# The experiment has to be a z-stack in centre mode, which then runs around this focus. The analysis
-# GUVTopZScan reads the top from it.
+# Both have to move: the stack runs between the positions set in step 3 and not around the focus, while
+# the analysis GUVTopZScan counts from the focus stored in the image. The range and the interval stay
+# as saved in the experiment.
 #
 # The height Definite Focus settles at does not change with the size of a GUV, while the top does, so
 # how far this aim is off may depend on R. guv_top_stack.json next to the results records the numbers
@@ -67,6 +69,7 @@ def guv_top_stack(ctx):
     record["fallback_reason"] = reason
 
     ctx.zen_api.move_focus(record["z_aim"])
+    record["z_stack_first"], record["z_stack_last"] = ctx.zen_api.center_z_stack(ctx.experiment, record["z_aim"])
 
     log("guv_top_stack: radius {}, focus {} -> {}".format(radius, start_z, record["z_aim"]))
 
