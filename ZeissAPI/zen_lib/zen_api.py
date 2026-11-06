@@ -302,6 +302,24 @@ class ZenApi:
 
         experiment.SetActive()
 
+    def _dimension_setups(self, experiment_name):
+        """
+        Every setup of the acquisition block, however deep. With Tiles switched on the tracks do not sit
+        in the block itself but under RegionsSetup and TilesSetup.
+        :return: list of the setups
+        """
+        experiment = self.zen.Acquisition.Experiments.GetByName(experiment_name)
+
+        setups = []
+        waiting = list(experiment.Core.CurrentExperimentBlock.SubDimensionSetups)
+
+        while waiting:
+            setup = waiting.pop()
+            setups.append(setup)
+            waiting.extend(setup.SubDimensionSetups)
+
+        return setups
+
     def center_z_stack(self, experiment_name, z):
         """
         Moves the z-stack of the experiment so that its centre is at z, keeping its range and interval.
@@ -312,9 +330,7 @@ class ZenApi:
         :param float z: focus position of the centre in micrometres
         :return: tuple (first, last) of the z-stack after the change
         """
-        experiment = self.zen.Acquisition.Experiments.GetByName(experiment_name)
-
-        for setup in experiment.Core.CurrentExperimentBlock.SubDimensionSetups:
+        for setup in self._dimension_setups(experiment_name):
             if hasattr(setup, "IsCenterMode"):
                 half_range = (setup.Last - setup.First) / 2.0
                 setup.Define(z - half_range, z + half_range, setup.Interval)
@@ -334,9 +350,7 @@ class ZenApi:
         every call, because a plugin may have switched to another experiment and back in between.
         :return: the Parameter object, or None when the experiment has no such laser line
         """
-        experiment = self.zen.Acquisition.Experiments.GetByName(experiment_name)
-
-        for setup in experiment.Core.CurrentExperimentBlock.SubDimensionSetups:
+        for setup in self._dimension_setups(experiment_name):
             if not hasattr(setup, "ActivatedTracks"):
                 continue
 
