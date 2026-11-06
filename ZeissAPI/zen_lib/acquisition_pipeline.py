@@ -116,6 +116,8 @@ class AcquisitionPipeline:
 
         log('Initializing overview experiment')
 
+        self._apply_adaptive(self.overview_id, overview_experiment, '_overview', name, None)
+
         self.zeiss_api.load_experiment(overview_experiment)
         self.zeiss_api.execute_current_experiment()
 
@@ -280,11 +282,10 @@ class AcquisitionPipeline:
 
         log("Finished reanalysis for object {}".format(obj_id))
 
-    def _run_experiment(self, obj_id, exp_item, stage, name=None, obj=None):
+    def _apply_adaptive(self, obj_id, exp_item, stage, name=None, obj=None):
         """
-        Function responsible for loading, executing experiments and saving the results in correct directory with
-        proper name. If an adaptive function is paired with this experiment it runs first and rewrites
-        it, using the properties of the object the experiment is about to be run on.
+        If an adaptive function is paired with this experiment it runs here and rewrites it, using the
+        properties of the object the experiment is about to be run on. obj is None for an overview.
         """
 
         adaptive = self.adaptive_experiments.get(exp_item)
@@ -297,6 +298,14 @@ class AcquisitionPipeline:
                                      self.config.surface_offsets))
 
             log('Rewrote experiment {} with {}'.format(exp_item, adaptive.__name__))
+
+    def _run_experiment(self, obj_id, exp_item, stage, name=None, obj=None):
+        """
+        Function responsible for loading, executing experiments and saving the results in correct directory with
+        proper name. An adaptive function paired with this experiment runs first.
+        """
+
+        self._apply_adaptive(obj_id, exp_item, stage, name, obj)
 
         self.zeiss_api.load_experiment(exp_item)
         self.zeiss_api.execute_current_experiment()

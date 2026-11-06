@@ -176,6 +176,7 @@ else:
         candidates = []
 
         if finding_objects:
+            candidates.append(result_setup.GetValue('over_exp_name'))
             candidates.append(result_setup.GetValue('vis_exp'))
 
         candidates.append(none_or_value(result_setup.GetValue('z_exp_name')))

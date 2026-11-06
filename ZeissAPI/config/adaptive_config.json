@@ -25,5 +25,6 @@
                        "min_signal": 20.0},
  "fcs_zscan": {"max_radius_um": 200,
                "z_offsets_um": [-0.2, -0.1, 0.0, 0.1, 0.2]},
+ "definite_focus": {"offset_um": 0.0},
  "guv_top_stack": {"aim_offset_um": 0.0,
                    "max_radius_um": 200}}
