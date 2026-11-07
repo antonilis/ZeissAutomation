@@ -118,6 +118,13 @@ def _smart_fcs_step(settings, power, reading):
 
 
 def _smart_fcs_close_enough(settings, power, next_power):
+    """
+    A step to the end of the allowed range is always taken, however small: the target is out of reach then, and the
+    end of the range is as near to it as the power can get.
+    """
+    if next_power != power and (next_power >= settings["max_power"] or next_power <= settings["min_power"]):
+        return False
+
     return abs(next_power - power) <= settings["tolerance"] * power
 
 
