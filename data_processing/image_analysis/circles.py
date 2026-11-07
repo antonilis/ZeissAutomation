@@ -287,6 +287,27 @@ class Circles(ImageAnalysisTemplate):
 
         return rois
 
+    def keep_objects_holding_stage(self, pixel_points, stage_points):
+        """
+        For an image taken on an object: only an object with the stage inside it is that object, anything else is a
+        neighbour. The radius of the object sets the limit, so there is no number to tune. With nothing left there is
+        no correction and the pipeline stays at the position it came with.
+        :param list pixel_points: found objects in pixel coordinates
+        :param list stage_points: the same objects in stage coordinates, radii in um
+        :return: tuple of the two lists, without the objects that do not hold the stage
+        """
+        stage = self.metadata['stage_position']
+
+        kept = set(p['id'] for p in stage_points
+                   if np.hypot(p['position'][0] - stage['x'], p['position'][1] - stage['y']) < p['radius'])
+
+        if stage_points and not kept:
+            print("None of the {} circles holds the stage position, no correction of xy".format(len(stage_points)))
+
+        self.object_contours = {k: v for k, v in self.object_contours.items() if k in kept}
+
+        return [p for p in pixel_points if p['id'] in kept], [p for p in stage_points if p['id'] in kept]
+
     def get_measurement_points(self):
         """
         Detect circular objects, filter them by size, and convert their positions
@@ -324,5 +345,8 @@ class Circles(ImageAnalysisTemplate):
 
         transformed_points = self.pixel_converter.convert_points(measurement_point, xy_mode='normal',
                                                                  z_strategy=z_normal)
+
+        if self.analysis_details.get('must_hold_stage'):
+            return self.keep_objects_holding_stage(measurement_point, transformed_points)
 
         return measurement_point, transformed_points

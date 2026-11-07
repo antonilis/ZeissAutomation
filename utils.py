@@ -62,22 +62,6 @@ def parse_args_to_dict():
     return args_dict
 
 
-def holds_stage_position(point, stage_position):
-    """
-    Whether a found object is the one the stage was sent to: the stage has to stand inside it. Needs no limit of its own,
-    because the size of the object sets it. An object without a radius cannot be checked and passes.
-    :param dict point: the found object in stage coordinates
-    :param dict stage_position: position of the stage
-    :return: bool
-    """
-    if 'radius' not in point:
-        return True
-
-    distance = np.hypot(point['position'][0] - stage_position['x'], point['position'][1] - stage_position['y'])
-
-    return bool(distance < point['radius'])
-
-
 def choose_the_closest_point(measurement_points, stage_position):
     """
     Function to choose the closest point from the founded to the stage position
