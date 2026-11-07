@@ -20,13 +20,15 @@ from zen_lib.adaptive_loader import register_adaptive
 # 2R is geometry. h depends on the plate, so it is learned during the run:
 #
 #   1. the top the analysis found for the GUV before gives one more value of h
-#   2. h is the median of those values, and start_height_um only until the first one is in
-#   3. until three values are in, the stack runs search_half_range_um around the aim, afterwards
-#      half_range_um. Three is the fewest with which a median ignores one wrong top, and a narrow stack
-#      aimed from a wrong h would miss the tops it needs to recover. Only found tops away from the edge
-#      of the scan count
+#   2. h is the median of the largest group of values that agree with each other. Until two values agree
+#      it stays start_height_um, so one wrong top moves nothing, however early it comes: a first wrong
+#      top once sent every next stack higher, and each of them found more wrong tops
+#   3. until three values agree, the stack runs search_half_range_um around the aim, afterwards
+#      half_range_um, because a narrow stack aimed from a wrong h would miss the tops it needs to recover.
+#      Only found tops away from the edge of the scan count
 #
-# A new plate therefore takes over after a few GUVs, without any setting.
+# A new plate therefore takes over after a few GUVs, without any setting. A wrong top still costs its own
+# GUV, the z-reanalysis sends the focus there.
 #
 # The focus and the centre of the stack both go to the aim: the stack runs between the positions set here
 # and not around the focus, while the analysis GUVTopZScan counts from the focus stored in the image.
@@ -52,7 +54,9 @@ from zen_lib.adaptive_loader import register_adaptive
 
 _GUV_TOP_HEIGHTS = []       # the values of h learned so far
 _GUV_TOP_PENDING = []       # the last GUV, whose top is not read yet: obj_id, name, z_surface, radius
-_GUV_TOP_TRUSTED = 3        # tops needed for a median to ignore a wrong one
+_GUV_TOP_AGREEING = 2       # values that have to agree before h leaves its starting value
+_GUV_TOP_TRUSTED = 3        # values that have to agree before the stack gets narrow
+_GUV_TOP_AGREEMENT_UM = 1.0     # the width of a group, three times the 0.31 um rms of h on 15 GUVs
 
 
 ###################### helpers ########################################################################
@@ -84,14 +88,31 @@ def _guv_top_learn(ctx):
         log("guv_top_stack could not read the top of {}: {}".format(obj_id, error))
 
 
+def _guv_top_agreeing():
+    """
+    :return: list of the sorted heights of the largest group that fits in _GUV_TOP_AGREEMENT_UM
+    """
+    heights = sorted(_GUV_TOP_HEIGHTS)
+    best = []
+
+    for index, low in enumerate(heights):
+        group = [height for height in heights[index:] if height - low <= _GUV_TOP_AGREEMENT_UM]
+
+        if len(group) > len(best):
+            best = group
+
+    return best
+
+
 def _guv_top_height(start_height):
     """
-    :return: the median of the learned heights, the starting one when there are none
+    :return: the median of the agreeing heights, the starting one until enough of them agree
     """
-    if not _GUV_TOP_HEIGHTS:
+    heights = _guv_top_agreeing()
+
+    if len(heights) < _GUV_TOP_AGREEING:
         return start_height
 
-    heights = sorted(_GUV_TOP_HEIGHTS)
     middle = len(heights) // 2
 
     return heights[middle] if len(heights) % 2 else (heights[middle - 1] + heights[middle]) / 2.0
@@ -110,12 +131,13 @@ def guv_top_stack(ctx):
     settings = ctx.settings
     start_z = ctx.zen_api.focus_z()
     radius = ctx.obj['radius'] if ctx.obj else None
-    trusted = len(_GUV_TOP_HEIGHTS) >= _GUV_TOP_TRUSTED
+    agreeing = len(_guv_top_agreeing())
+    trusted = agreeing >= _GUV_TOP_TRUSTED
     half_range = settings["half_range_um"] if trusted else settings["search_half_range_um"]
 
     record = {"start_z": start_z, "radius_um": radius, "objective_magnification": ctx.zen_api.objective_magnification(),
-              "height_um": _guv_top_height(settings["start_height_um"]), "learned_tops": len(_GUV_TOP_HEIGHTS),
-              "half_range_um": half_range}
+              "height_um": _guv_top_height(settings["start_height_um"]), "learned_tops": agreeing,
+              "all_tops": len(_GUV_TOP_HEIGHTS), "half_range_um": half_range}
 
     reason = None
 
@@ -141,8 +163,8 @@ def guv_top_stack(ctx):
     ctx.zen_api.move_focus(record["z_aim"])
     record["z_stack_first"], record["z_stack_last"] = ctx.zen_api.center_z_stack(ctx.experiment, record["z_aim"], half_range)
 
-    log("guv_top_stack: radius {}, h {} from {} tops, focus {} -> {}".format(
-        radius, record["height_um"], record["learned_tops"], start_z, record["z_aim"]))
+    log("guv_top_stack: radius {}, h {} from {} agreeing of {} tops, focus {} -> {}".format(
+        radius, record["height_um"], agreeing, record["all_tops"], start_z, record["z_aim"]))
 
     path = Path.Combine(ctx.result_dir(), "guv_top_stack.json")
 
