@@ -20,10 +20,10 @@ class GUVTopZScan(ImageAnalysisTemplate):
     smoothing_um = 0.3
     edge_margin_um = 1.0
 
-    def get_axis_signal(self, roi_radius_um):
+    def get_axis_pixels(self, roi_radius_um):
         """
         :param roi_radius_um: float radius of the disc on the axis
-        :return: 1D array of the summed counts of the disc in every plane of the stack
+        :return: 2D array of the pixels of the disc, one row per plane of the stack
         """
         scaling = self.metadata['scaling_um_per_pixel']
         um_per_pixel = np.mean([scaling['X'], scaling['Y']]) * 10 ** 6
@@ -32,21 +32,28 @@ class GUVTopZScan(ImageAnalysisTemplate):
         rows, columns = np.indices((height, width))
         distance = np.hypot(columns - (width - 1) / 2, rows - (height - 1) / 2) * um_per_pixel
 
-        return self.image[:, distance < roi_radius_um].astype(float).sum(axis=1)
+        return self.image[:, distance < roi_radius_um].astype(float)
 
-    def find_top(self, signal, z_step_um, min_peak_sigma):
+    def find_top(self, pixels, z_step_um, min_peak_sigma):
         """
         Takes the highest peak that stands out from the counting noise. The highest and not the strongest one, because a
         scan reaching the bottom of the GUV, or a vesicle inside it, would give a second peak below the top.
-        :param signal: 1D array of counts, one per plane, plane index growing with z
+        The noise is that of counting events and not of grey values. One event can be worth tens of grey values, depending
+        on the detector settings, and the square root of the grey values then makes a few stray photons above a weak GUV
+        look like a peak. The size of an event is read from the planes without the membrane.
+        :param pixels: 2D array of the pixels of the disc, one row per plane, plane index growing with z
         :param z_step_um: float distance between the planes
         :param min_peak_sigma: float how many sigma of the background a peak has to stand out
         :return: tuple (plane index as a float or None when there is no peak, peak height above the background in sigma)
         """
+        signal = pixels.sum(axis=1)
         smoothed = ndimage.gaussian_filter1d(signal, max(self.smoothing_um / z_step_um, 0.5), mode='nearest')
 
         background = np.percentile(smoothed, 25)
-        noise = np.sqrt(max(background, 1))
+
+        quiet = pixels[smoothed <= np.median(smoothed)]
+        event_size = quiet[quiet > 0].mean() if (quiet > 0).any() else 1.0
+        noise = event_size * np.sqrt(max(background / event_size, 1))
 
         peaks, _ = find_peaks(smoothed, prominence=min_peak_sigma * noise)
 
@@ -73,8 +80,8 @@ class GUVTopZScan(ImageAnalysisTemplate):
         number_of_planes = self.image.shape[0]
         z_step_um = self.metadata['scaling_um_per_pixel']['Z'] * 10 ** 6
 
-        signal = self.get_axis_signal(self.analysis_details.get('roi_radius_um', 1.5))
-        top, peak_sigma = self.find_top(signal, z_step_um, self.analysis_details.get('min_peak_sigma', 5))
+        pixels = self.get_axis_pixels(self.analysis_details.get('roi_radius_um', 1.5))
+        top, peak_sigma = self.find_top(pixels, z_step_um, self.analysis_details.get('min_peak_sigma', 5))
 
         top_found = top is not None
         centre_plane = (number_of_planes - 1) / 2
@@ -98,7 +105,7 @@ class GUVTopZScan(ImageAnalysisTemplate):
 
         measurement_points = [{'id': self.new_object_id(), 'position': [x, y, z_plane], 'top_found': top_found,
                                'at_scan_edge': bool(at_scan_edge), 'peak_sigma': peak_sigma,
-                               'axis_signal': signal.tolist()}]
+                               'axis_signal': pixels.sum(axis=1).tolist()}]
 
         transformed_points = self.pixel_converter.convert_points(measurement_points, xy_mode="center",
                                                                  z_strategy=self.pixel_converter.convert_z_auto)
