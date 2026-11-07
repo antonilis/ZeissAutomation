@@ -24,15 +24,18 @@ from adaptive.smart_FCS import smart_FCS
 # Several positions around the top, because the top itself is known to a few hundred nm. N and tau have
 # their minimum where the membrane is in the focus.
 #
-# With no usable reading smart_FCS leaves the experiment at its own power, so keep a safe power saved in
-# it. FCS_points.json and smart_FCS.json next to the results record the positions and the readings.
+# With no usable reading the GUV is skipped and the pipeline goes to the next one: the spot is then off the
+# membrane or the dye is gone, and a measurement there costs minutes for nothing. skip_without_signal false
+# runs it anyway, at the power saved in the experiment, so keep a safe power saved in it.
+# FCS_points.json and smart_FCS.json next to the results record the positions and the readings.
 
 
 ###################### settings ########################################################################
 # The "GUV_line_FCS" entry of config/adaptive_config.json. Everything smart_FCS reads, see smart_FCS.py,
 # with focus "none" to stay on the top, and:
 #
-#   z_offsets_um    the positions, relative to the top
+#   z_offsets_um          the positions, relative to the top
+#   skip_without_signal   optional, true when missing
 
 
 @register_adaptive
@@ -49,7 +52,11 @@ def GUV_line_FCS(ctx):
     # read before smart_FCS runs its short measurements
     x, y, z = ctx.zen_api.get_stage_focus_position()
 
-    smart_FCS(ctx)
+    record = smart_FCS(ctx)
+
+    if record is not None and record["chosen_power_percent"] is None and settings.get("skip_without_signal", True):
+        log("GUV_line_FCS: no usable count rate on the top, skipping the FCS of this GUV")
+        return False
 
     positions = [[x, y, z + offset] for offset in settings["z_offsets_um"]]
 

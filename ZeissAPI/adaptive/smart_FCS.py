@@ -197,6 +197,8 @@ def smart_FCS(ctx):
     Chooses the laser power of the FCS experiment from at most two short measurements, as the settings
     in adaptive_config.json say. ctx.obj is not used: the power depends on the spot, not on an object,
     so the function works the same with and without object finding.
+    :return: the record of smart_FCS.json, chosen_power_percent None when no reading was usable; None when
+             nothing was measured. Never False, so paired on its own it never skips its experiment
     """
     zen_api = ctx.zen_api
     experiment = ctx.experiment
@@ -248,3 +250,5 @@ def smart_FCS(ctx):
 
     with open(Path.Combine(ctx.result_dir(), "smart_FCS.json"), "w") as record_file:
         json.dump(record, record_file, indent=2)
+
+    return record
