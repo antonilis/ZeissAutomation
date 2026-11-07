@@ -196,6 +196,16 @@ class Circles(ImageAnalysisTemplate):
         return {"center": (float(x), float(y)), "radius": float(radius), "fit ratio": float(keep.mean()),
                 "contour": contour.reshape(-1, 1, 2)}
 
+    @staticmethod
+    def is_inside_image(rim, shape):
+        """
+        :return: bool, whether the whole circle lies in the image
+        """
+        x, y = rim["center"]
+        radius = rim["radius"]
+
+        return x >= radius and y >= radius and x + radius <= shape[1] - 1 and y + radius <= shape[0] - 1
+
     def find_circles_on_transmitted_light(self, min_size_um=1, max_size_um=50, min_score=0.05, min_fit_ratio=0.2):
         """
         Finds GUVs by the rim they have on transmitted light. Unlike a threshold this does not need the object to differ
@@ -224,6 +234,10 @@ class Circles(ImageAnalysisTemplate):
             rim = self._fit_rim(image, um_per_pixel, x, y, radius)
 
             if rim is None or rim["fit ratio"] < min_fit_ratio:
+                continue
+
+            # a circle fitted to a part of a rim has an unreliable centre and radius, and the stage would go there
+            if not self.is_inside_image(rim, image.shape):
                 continue
 
             # two peaks can settle on the same rim, the better scored one came first

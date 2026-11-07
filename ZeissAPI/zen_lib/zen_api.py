@@ -320,7 +320,7 @@ class ZenApi:
 
         return setups
 
-    def center_z_stack(self, experiment_name, z):
+    def center_z_stack(self, experiment_name, z, half_range=None):
         """
         Moves the z-stack of the experiment so that its centre is at z, keeping its range and interval.
         A z-stack runs between absolute positions, the ones the Center button of the Z-Stack tool sets,
@@ -328,11 +328,14 @@ class ZenApi:
         and the change is in memory only.
         :param str experiment_name: name of the experiment as saved in ZEN
         :param float z: focus position of the centre in micrometres
+        :param float half_range: half of the range in micrometres, by default the range stays
         :return: tuple (first, last) of the z-stack after the change
         """
         for setup in self._dimension_setups(experiment_name):
             if hasattr(setup, "IsCenterMode"):
-                half_range = (setup.Last - setup.First) / 2.0
+                if half_range is None:
+                    half_range = (setup.Last - setup.First) / 2.0
+
                 setup.Define(z - half_range, z + half_range, setup.Interval)
 
                 return setup.First, setup.Last

@@ -1,3 +1,4 @@
 {"green_membrane": {"chosen_selection": "ChannelIntensity", "channel": 1, "min_value": 120},
   "bright_green_only": {"chosen_selection": "ChannelIntensity", "channel": 1, "min_value": 200, "statistic": "median"},
-  "not_filled": {"chosen_selection": "ChannelIntensity", "channel": 0, "max_value": 0.75}}
+  "not_filled": {"chosen_selection": "ChannelIntensity", "channel": 0, "max_value": 0.75},
+  "hollow": {"chosen_selection": "HollowObject", "channel": 0, "max_centre_over_ring": 1.0, "min_ring_sigma": 5}}

@@ -2,7 +2,7 @@ import json
 import os
 from data_processing.processor.zeiss_image_processor import ZeissImageProcessor
 from data_processing.processor.zeiss_FCS_processor import ZeissFCSProcessor
-from utils import visualize_points, parse_args_to_dict, choose_the_closest_point
+from utils import visualize_points, parse_args_to_dict, choose_the_closest_point, holds_stage_position
 from pathlib import Path
 
 """
@@ -99,7 +99,12 @@ else:
             print("Found multiple objects after reanalysis: {}".format(len(selected_points)))
             selected_points = [choose_the_closest_point(selected_points, obj.metadata["stage_position"])]
 
-        obj.measurement_points = selected_points
+        # Nothing found at the stage means no correction: the pipeline then stays at the position it came with, which is
+        # better than driving to a neighbour
+        obj.measurement_points = [p for p in selected_points if holds_stage_position(p, obj.metadata["stage_position"])]
+
+        if selected_points and not obj.measurement_points:
+            print("The closest object does not hold the stage position, no correction of xy")
 
     obj.save_measurement_points(command_args['saving_path'])
 
