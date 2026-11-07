@@ -37,6 +37,13 @@ def register_adaptive(function):
     return function
 
 
+class SkipExperiment(Exception):
+    """
+    Raised by an adaptive experiment that finds nothing worth measuring on this object. The pipeline then does
+    not run the experiment and goes on with the next one. The message says why, and it ends up in the log.
+    """
+
+
 class AdaptiveContext:
     """
     Everything an adaptive function is handed about the experiment it is about to rewrite.

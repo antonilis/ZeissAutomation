@@ -198,7 +198,7 @@ def smart_FCS(ctx):
     in adaptive_config.json say. ctx.obj is not used: the power depends on the spot, not on an object,
     so the function works the same with and without object finding.
     :return: the record of smart_FCS.json, chosen_power_percent None when no reading was usable; None when
-             nothing was measured. Never False, so paired on its own it never skips its experiment
+             nothing was measured
     """
     zen_api = ctx.zen_api
     experiment = ctx.experiment

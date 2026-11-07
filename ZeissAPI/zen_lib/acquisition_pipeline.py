@@ -5,7 +5,7 @@ from System.IO import Path, File
 from zen_lib.runtime_config import log, read_json
 from zen_lib.path_manager_main_macro import PathManager
 from zen_lib.execute_python import PythonAnalysisRunner
-from zen_lib.adaptive_loader import AdaptiveContext
+from zen_lib.adaptive_loader import AdaptiveContext, SkipExperiment
 
 
 # ==============================================================================
@@ -286,7 +286,6 @@ class AcquisitionPipeline:
         """
         If an adaptive function is paired with this experiment it runs here and rewrites it, using the
         properties of the object the experiment is about to be run on. obj is None for an overview.
-        :return: False when the function asks for the experiment not to run, True otherwise
         """
 
         adaptive = self.adaptive_experiments.get(exp_item)
@@ -294,27 +293,22 @@ class AcquisitionPipeline:
         if adaptive is not None:
             log('Doing adaptive experiment {} on {}'.format(adaptive.__name__, exp_item))
 
-            result = adaptive(AdaptiveContext(self.zeiss_api, exp_item, self._result_id(obj_id), stage, obj, name,
+            adaptive(AdaptiveContext(self.zeiss_api, exp_item, self._result_id(obj_id), stage, obj, name,
                                      self.path_manager, adaptive.__name__, self.adaptive_settings,
                                      self.config.surface_offsets))
 
-            # only an explicit False skips, the functions that return nothing keep running their experiment
-            if result is False:
-                log('Skipping experiment {}: {} found nothing worth running it on'.format(exp_item, adaptive.__name__))
-                return False
-
             log('Rewrote experiment {} with {}'.format(exp_item, adaptive.__name__))
-
-        return True
 
     def _run_experiment(self, obj_id, exp_item, stage, name=None, obj=None):
         """
         Function responsible for loading, executing experiments and saving the results in correct directory with
-        proper name. An adaptive function paired with this experiment runs first, and it can ask for the
-        experiment to be skipped.
+        proper name. An adaptive function paired with this experiment runs first, and it can skip the experiment.
         """
 
-        if not self._apply_adaptive(obj_id, exp_item, stage, name, obj):
+        try:
+            self._apply_adaptive(obj_id, exp_item, stage, name, obj)
+        except SkipExperiment as reason:
+            log('Skipping experiment {} on object {}: {}'.format(exp_item, obj_id, reason))
             return
 
         self.zeiss_api.load_experiment(exp_item)

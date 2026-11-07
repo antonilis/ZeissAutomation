@@ -177,10 +177,9 @@ top of a GUV, using the radius the analysis measured.
    plugin must handle both. `fcs_zscan` falls back to a radius of zero and centres its scan on the
    current focus. Keywords after `ctx` are for other plugins only: `smart_SLB_imaging` imports
    `smart_focus` and calls it with `use_surface=True`.
-4. A plugin that returns exactly `False` stops its experiment from running on this object, and the
-   pipeline goes on with the next one; anything else, `None` included, runs it. `GUV_line_FCS` returns
-   `False` when `smart_FCS` got no usable count rate on the top. `smart_FCS` itself never returns
-   `False`, so paired on its own it always runs its experiment.
+4. A plugin that finds nothing worth measuring raises `SkipExperiment("why")`, from
+   `zen_lib.adaptive_loader`. The pipeline then does not run that experiment on this object, logs the
+   reason and goes on. `GUV_line_FCS` does it when `smart_FCS` got no usable count rate on the top.
 
 **A plugin is an ordinary module and touches the microscope only through `ctx.zen_api`.** It
 never calls `Zen` — it could not, an imported module does not see the names ZEN injects into a
@@ -332,6 +331,9 @@ Follow `CODING_STYLE.md`. The short version:
   functions with blank lines and uses `####`/`====` banner comments between sections.
 - `if __name__ == '__main__':` blocks are hand-run smoke tests with hardcoded paths.
   They are intentional. Leave them.
+- Changes to the core (`zen_lib/`, `main_processor.py`, the processors) stay simple and readable: a
+  line has to say what it does without a comment explaining it. Prefer a named mechanism, such as
+  raising `SkipExperiment`, to a return value with a special meaning that a reader has to know about.
 
 ## Running
 

@@ -3,7 +3,7 @@ import json
 from System.IO import Path
 
 from zen_lib.runtime_config import log
-from zen_lib.adaptive_loader import register_adaptive
+from zen_lib.adaptive_loader import register_adaptive, SkipExperiment
 
 from adaptive.smart_FCS import smart_FCS
 
@@ -55,8 +55,7 @@ def GUV_line_FCS(ctx):
     record = smart_FCS(ctx)
 
     if record is not None and record["chosen_power_percent"] is None and settings.get("skip_without_signal", True):
-        log("GUV_line_FCS: no usable count rate on the top, skipping the FCS of this GUV")
-        return False
+        raise SkipExperiment("no usable count rate on the top of the GUV")
 
     positions = [[x, y, z + offset] for offset in settings["z_offsets_um"]]
 
