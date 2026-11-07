@@ -28,6 +28,9 @@ class Circles(ImageAnalysisTemplate):
     number_of_rays = 180
     min_number_of_rays = 30
 
+    # centres of two touching circles of one size are two radii apart, so further than that is a neighbour
+    max_stage_distance_in_radii = 2
+
     @staticmethod
     def _classify_contours_by_area(contours, hierarchy, top_n=None):
         """
@@ -289,20 +292,22 @@ class Circles(ImageAnalysisTemplate):
 
     def keep_objects_holding_stage(self, pixel_points, stage_points):
         """
-        For an image taken on an object: only an object with the stage inside it is that object, anything else is a
-        neighbour. The radius of the object sets the limit, so there is no number to tune. With nothing left there is
-        no correction and the pipeline stays at the position it came with.
+        For an image taken on an object: only an object close to the stage is that object, anything else is a neighbour.
+        The limit is in radii of the object, because the stage misses the centre by a few um whatever the size of the
+        GUV, up to 0.8 of the radius on small ones. With nothing left there is no correction and the pipeline stays at
+        the position it came with.
         :param list pixel_points: found objects in pixel coordinates
         :param list stage_points: the same objects in stage coordinates, radii in um
-        :return: tuple of the two lists, without the objects that do not hold the stage
+        :return: tuple of the two lists, without the objects too far from the stage
         """
         stage = self.metadata['stage_position']
 
         kept = set(p['id'] for p in stage_points
-                   if np.hypot(p['position'][0] - stage['x'], p['position'][1] - stage['y']) < p['radius'])
+                   if np.hypot(p['position'][0] - stage['x'], p['position'][1] - stage['y'])
+                   < self.max_stage_distance_in_radii * p['radius'])
 
         if stage_points and not kept:
-            print("None of the {} circles holds the stage position, no correction of xy".format(len(stage_points)))
+            print("None of the {} circles is close to the stage, no correction of xy".format(len(stage_points)))
 
         self.object_contours = {k: v for k, v in self.object_contours.items() if k in kept}
 
