@@ -1,0 +1,99 @@
+# The Python environment of World B, the analysis side. The single source of its versions: uv.lock,
+# made from this file, pins every package with its hashes for Linux and Windows at once.
+#
+#   uv sync --extra cpu                 the environment of a development machine, torch for the CPU
+#   uv sync --extra gpu                 the same with torch for CUDA 12.6
+#   uv lock --upgrade                   newer versions, to be tested before they are committed
+#   python installer/export_requirements.py   requirements*.txt for pip and the offline installer
+#
+# World A, the ZEN side, runs in ZEN's own IronPython and takes nothing from here.
+
+[project]
+name = "zeiss-automation"
+version = "0.1.0"
+description = "Closed-loop microscopy on ZEISS ZEN: the analysis side"
+requires-python = "==3.10.*"
+
+# Every package the analysis was run with, pinned, not only the direct ones: these are the versions
+# of the environment the measurements of 2026-11 were made in, and the lock has to reproduce them.
+# torch is in the extras, because its build depends on the machine.
+dependencies = [
+    "aicspylibczi==3.3.1",
+    "cellpose==3.0",
+    "cmake==4.1.0",
+    "colorama==0.4.6",
+    "contourpy==1.3.2",
+    "cycler==0.12.1",
+    "czifile==2019.7.2.1",
+    "dill==0.4.0",
+    "fastremap==1.17.7",
+    "filelock==3.20.0",
+    "fonttools==4.59.2",
+    "fsspec==2025.9.0",
+    "imagecodecs==2025.3.30",
+    "imageio==2.37.0",
+    "Jinja2==3.1.6",
+    "kiwisolver==1.4.9",
+    "lazy_loader==0.4",
+    "llvmlite==0.45.1",
+    "MarkupSafe==3.0.3",
+    "matplotlib==3.10.6",
+    "mpmath==1.3.0",
+    "natsort==8.4.0",
+    "networkx==3.4.2",
+    "numba==0.62.1",
+    "numpy==2.2.6",
+    "opencv-python-headless==4.12.0.88",
+    "packaging==25.0",
+    "pandas==2.3.3",
+    "pillow==11.3.0",
+    "pylibCZIrw==5.0.0",
+    "pyparsing==3.2.3",
+    "python-dateutil==2.9.0.post0",
+    "pytz==2025.2",
+    "roifile==2025.5.10",
+    "scikit-image==0.25.2",
+    "scipy==1.15.3",
+    "six==1.17.0",
+    "sympy==1.14.0",
+    "tifffile==2025.5.10",
+    "tqdm==4.67.1",
+    "typing_extensions==4.15.0",
+    "tzdata==2025.2",
+    "validators==0.35.0",
+    "xmltodict==1.0.2",
+]
+
+[project.optional-dependencies]
+cpu = ["torch==2.8.0"]
+gpu = ["torch==2.8.0"]
+
+[dependency-groups]
+dev = ["pytest==9.0.3"]
+
+[tool.uv]
+# not a package to build, only an environment
+package = false
+# the two builds of torch exclude each other
+conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
+# the platforms the project runs on: development on Linux, the microscope on Windows
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "gpu" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

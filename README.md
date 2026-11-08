@@ -20,7 +20,10 @@ Although originally designed for specific experimental setups, the framework is 
 
 ## Requirements
 
-The analysis side runs on **Python 3.10.11**; install the packages from `requirements.txt`.
+The analysis side runs on **Python 3.10.11**. The versions are locked in `uv.lock`:
+`uv sync --extra cpu` (or `--extra gpu` for torch with CUDA) makes the environment. Without uv,
+`pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu` installs the
+same versions. On the microscope PC the installer does it offline, see `INSTALL.md`.
 
 ---
 

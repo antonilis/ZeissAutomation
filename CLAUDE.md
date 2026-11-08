@@ -378,9 +378,15 @@ repo, next to `ZeissAutomation/`):
 source /media/dysk/MPI/Project/.venv/bin/activate
 ```
 
-It is built from `requirements.txt` with two changes on this machine: `torch==2.8.0+cpu` instead of
-the CUDA build, and `opencv-python-headless` only, because `opencv-python` overwrites the same files.
-Notebooks use the Jupyter kernel `zeiss-py310`, which this venv provides.
+Its versions come from `pyproject.toml` and `uv.lock`, the one source of the environment: the lock pins
+every package with its hashes, for Linux and for Windows at once, torch in two variants (extras `cpu`
+and `gpu`). The three `requirements*.txt` files are made from the lock by
+`installer/export_requirements.py`, for pip and the offline installer; never edit them by hand.
+`tests/contract/test_requirements_lock.py` fails when the lock or the files fall behind. To change a
+version: edit `pyproject.toml`, `uv lock`, `python installer/export_requirements.py`, run the tests.
+The venv above matches the lock exactly (checked on 2026-11-08); `uv sync --extra cpu --group dev`
+makes the same one in `.venv/` of the repo. Notebooks use the Jupyter kernel `zeiss-py310`, which the
+venv above provides.
 
 Tests on this machine, from the project root (see Tests below):
 
@@ -391,9 +397,7 @@ PYTHONPATH=tests/support:. /media/dysk/MPI/Project/.venv/bin/python -m pytest te
 ## Tests
 
 ```
-python3 -m venv .venv
-.venv/bin/pip install torch==2.8.0+cpu --index-url https://download.pytorch.org/whl/cpu
-.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+uv sync --extra cpu --group dev                               # .venv from uv.lock, torch for the CPU
 .venv/bin/python -m pytest                                    # everything that needs no data
 ZEISS_TEST_DATA=/media/dysk/MPI .venv/bin/python -m pytest    # also the .czi files outside the repo
 ```
