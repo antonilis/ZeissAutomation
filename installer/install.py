@@ -19,14 +19,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from common import (PATH_CONFIG, PATH_CONFIG_TEMPLATE, build_path_config, env_dir, missing_keys,  # noqa: E402
-                    read_json, update_project_paths, was_moved, write_json)
+                    read_json, requirements_file, update_project_paths, was_moved, write_json)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = env_dir(ROOT)
 WHEELS = os.path.join(ENV, "wheels")
 MODELS = os.path.join(ENV, "models")
 VARIANT_FILE = os.path.join(ENV, "variant.json")
-REQUIREMENTS = os.path.join(ROOT, "requirements.txt")
 SOURCE_API = os.path.join(ROOT, "ZeissAPI")
 
 # Remembered per machine and per user, not in the folder: the folder travels between machines
@@ -80,13 +79,14 @@ def check_bundle():
     return read_json(VARIANT_FILE)
 
 
-def install_packages():
-    step("Packages, from {}".format(WHEELS))
+def install_packages(variant):
+    requirements = requirements_file(ROOT, variant["torch"])
+    step("Packages, from {}, as {} says".format(WHEELS, os.path.basename(requirements)))
     run = subprocess.run([sys.executable, "-m", "pip", "--disable-pip-version-check", "install", "--no-index",
-                          "--find-links", WHEELS, "-r", REQUIREMENTS, "--no-warn-script-location", "-q"])
+                          "--find-links", WHEELS, "-r", requirements, "--no-warn-script-location", "-q"])
     if run.returncode != 0:
         fail("pip could not install the packages from {} (see above). The bundle is incomplete or older than "
-             "requirements.txt: run download.bat again on a computer with internet.".format(WHEELS))
+             "{}: run download.bat again on a computer with internet.".format(WHEELS, os.path.basename(requirements)))
     print("OK")
 
 
@@ -224,7 +224,7 @@ def main():
     variant = check_bundle()
     settings = read_json(SETTINGS) if os.path.isfile(SETTINGS) else {}
 
-    install_packages()
+    install_packages(variant)
     install_models()
 
     macro_folder = zen_macro_folder(settings)

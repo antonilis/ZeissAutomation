@@ -21,6 +21,13 @@ TORCH_INDEX = {
     "cpu": "https://download.pytorch.org/whl/cpu",
 }
 
+# The requirements of each torch variant, made from uv.lock by installer/export_requirements.py. They pin
+# every package with its hashes, so pip refuses a wheel that is not the one locked.
+REQUIREMENTS = {
+    "cpu": "requirements.txt",
+    "gpu": "requirements-gpu.txt",
+}
+
 PATH_CONFIG = "path_config.json"
 PATH_CONFIG_TEMPLATE = "path_config.example.json"
 
@@ -31,6 +38,14 @@ TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 
 def env_dir(root):
     return os.path.join(root, ENV_DIR)
+
+
+def requirements_file(root, variant):
+    """
+    :param str variant: "cpu" or "gpu"
+    :return: str path of the requirements of that torch variant
+    """
+    return os.path.join(root, REQUIREMENTS[variant])
 
 
 def read_json(path):

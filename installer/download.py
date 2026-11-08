@@ -2,7 +2,7 @@
 Run by download.bat, on a computer WITH internet, in the portable Python it has just put into
 env\\python. Fills the bundle so that install.bat needs no internet at all:
 
-    env\\wheels   every package of requirements.txt, torch in the chosen variant
+    env\\wheels   every package of requirements.txt or requirements-gpu.txt, the files made from uv.lock
     env\\python   the same packages, installed (needed here to fetch the model)
     env\\models   the cellpose model, which cellpose would otherwise download on first use
 
@@ -18,14 +18,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from common import TORCH_INDEX, env_dir, read_json, write_json  # noqa: E402
+from common import TORCH_INDEX, env_dir, read_json, requirements_file, write_json  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = env_dir(ROOT)
 WHEELS = os.path.join(ENV, "wheels")
 MODELS = os.path.join(ENV, "models")
 VARIANT_FILE = os.path.join(ENV, "variant.json")
-REQUIREMENTS = os.path.join(ROOT, "requirements.txt")
 
 
 def ask_variant():
@@ -49,7 +48,8 @@ def pip(*args):
 
 def main():
     variant = ask_variant()
-    print("\nVariant: {} (torch from {})".format(variant, TORCH_INDEX[variant]))
+    requirements = requirements_file(ROOT, variant)
+    print("\nVariant: {} (torch from {}), {}".format(variant, TORCH_INDEX[variant], os.path.basename(requirements)))
 
     # wheels of the other variant would sit next to these and pip could pick either torch
     if os.path.isfile(VARIANT_FILE) and read_json(VARIANT_FILE).get("torch") != variant:
@@ -58,13 +58,14 @@ def main():
 
     os.makedirs(WHEELS, exist_ok=True)
 
-    # 1. the wheels, for this Python (3.10.11, Windows) exactly, as nothing gets built on the target
-    pip("download", "-r", REQUIREMENTS, "--extra-index-url", TORCH_INDEX[variant],
+    # 1. the wheels, for this Python (3.10.11, Windows) exactly, as nothing gets built on the target. The
+    #    requirements carry the hashes of uv.lock, so pip checks every wheel against them
+    pip("download", "-r", requirements, "--extra-index-url", TORCH_INDEX[variant],
         "--only-binary=:all:", "--dest", WHEELS)
 
     # 2. install them into the portable Python, from the folder only - the same command
     #    install.bat runs on the microscope PC, so a missing wheel shows up here, not there
-    pip("install", "--no-index", "--find-links", WHEELS, "-r", REQUIREMENTS, "--no-warn-script-location")
+    pip("install", "--no-index", "--find-links", WHEELS, "-r", requirements, "--no-warn-script-location")
 
     # 3. the cellpose model, fetched by cellpose itself rather than from a hardcoded URL
     os.makedirs(MODELS, exist_ok=True)
