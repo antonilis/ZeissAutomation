@@ -28,6 +28,9 @@ REQUIREMENTS = {
     "gpu": "requirements-gpu.txt",
 }
 
+# The folder of the CPython side, the one ZEN starts main_processor.py in and puts on PYTHONPATH
+DECISION_ENGINE = "DecisionEngine"
+
 PATH_CONFIG = "path_config.json"
 PATH_CONFIG_TEMPLATE = "path_config.example.json"
 
@@ -76,11 +79,11 @@ def build_path_config(root, zeiss_temp):
     root = root.rstrip("\\")
     paths = {
         "python_exe": ntpath.join(root, ENV_DIR, "python", "python.exe"),
-        "python_script": ntpath.join(root, "data_processing", "main_processor.py"),
+        "python_script": ntpath.join(root, DECISION_ENGINE, "data_processing", "main_processor.py"),
         "measuring_points_path": _folder(ntpath.join(root, "temp")),
         "results_path": _folder(ntpath.join(root, "results")),
         "image_for_analysis_path": _folder(ntpath.join(root, "image_for_analysis")),
-        "python_project_root": _folder(root),
+        "python_project_root": _folder(ntpath.join(root, DECISION_ENGINE)),
         "zeiss_temp_file": _folder(zeiss_temp),
         "log_path": ntpath.join(root, "zen_log.txt"),
         "last_setup_path": ntpath.join(root, "last_setup.json"),
@@ -105,7 +108,8 @@ def was_moved(current, root):
     which is what happens after the folder was moved or copied to another machine
     """
     recorded = current.get("python_project_root", "")
-    return ntpath.normcase(recorded.rstrip("\\")) != ntpath.normcase(root.rstrip("\\"))
+    expected = build_path_config(root, "")["python_project_root"]
+    return ntpath.normcase(recorded.rstrip("\\")) != ntpath.normcase(expected.rstrip("\\"))
 
 
 def update_project_paths(current, root):

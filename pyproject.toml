@@ -71,6 +71,23 @@ gpu = ["torch==2.8.0"]
 [dependency-groups]
 dev = ["pytest==9.0.3"]
 
+[tool.pytest.ini_options]
+# Tests live in tests/. The rest of the repository is never collected, so the hand-run
+# `if __name__ == '__main__':` smoke tests in the production modules are left alone.
+testpaths = ["tests"]
+# importlib mode imports each test file on its own and leaves sys.path to the line below
+addopts = "--import-mode=importlib -ra"
+# "DecisionEngine" - World B imports from its own root (data_processing..., IO..., utils), exactly as
+#                    PythonAnalysisRunner sets PYTHONPATH to python_project_root.
+# "ZeissAPI"       - World A imports zen_lib.<module>, exactly as ZEN sees it.
+# "tests/support"  - the fakes of System.*, clr and Zeiss.* and the shared helpers.
+pythonpath = ["DecisionEngine", "ZeissAPI", "tests/support"]
+markers = [
+    "data: needs real .czi files; set ZEISS_TEST_DATA to the folder holding them, skipped otherwise",
+    "slow: takes more than a few seconds",
+]
+xfail_strict = true
+
 [tool.uv]
 # not a package to build, only an environment
 package = false

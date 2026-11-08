@@ -18,7 +18,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from common import (PATH_CONFIG, PATH_CONFIG_TEMPLATE, build_path_config, env_dir, missing_keys,  # noqa: E402
+from common import (DECISION_ENGINE, PATH_CONFIG, PATH_CONFIG_TEMPLATE, build_path_config, env_dir,  # noqa: E402
+                    missing_keys,
                     read_json, requirements_file, update_project_paths, was_moved, write_json)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -204,11 +205,13 @@ def check_analysis(variant, api_folder):
         return
 
     result = os.path.join(ENV, "install_check.json")
-    command = [sys.executable, os.path.join(ROOT, "data_processing", "main_processor.py"),
+    engine = os.path.join(ROOT, DECISION_ENGINE)
+    command = [sys.executable, os.path.join(engine, "data_processing", "main_processor.py"),
                "--type=overview", "--file_path=" + image, "--saving_path=" + result,
                "--analysis_arguments=Cellpose", "--is_FCS=False",
                "--processing_config=" + os.path.join(api_folder, "config", "processing_config.json")]
-    run = subprocess.run(command, cwd=ROOT, env=dict(os.environ, PYTHONPATH=ROOT), capture_output=True, text=True)
+    # the same working folder and PYTHONPATH as ZEN gives it (execute_python.py, python_project_root)
+    run = subprocess.run(command, cwd=engine, env=dict(os.environ, PYTHONPATH=engine), capture_output=True, text=True)
     if run.returncode != 0 or not os.path.isfile(result):
         fail("main_processor.py failed on the test image:\n" + run.stderr[-2000:])
 

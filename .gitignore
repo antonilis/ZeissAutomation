@@ -32,25 +32,12 @@ ENV/
 *.pkl
 
 # ---- Pipeline directories ----
-# These three must EXIST for a run to work (nothing creates them), so they are
-# kept in the repo via .gitkeep, but everything the pipeline writes into them is
-# per-run output and is ignored.
-
-# Overview images acquired for analysis
-image_for_analysis/*
-!image_for_analysis/.gitkeep
-
-# Per-object result folders (obj_<uuid>/) with .czi, .fcs, .raw, FCS_points.json
-results/*
-!results/.gitkeep
-
-# Measurement JSONs + their .png overlays, written by main_processor.py.
-# points_for_overview.json is the exception: it is pipeline *input*, generated
-# once per plate by find_overview_positions.czmac and reused across runs, and it
-# is the only committed example of that file's format.
-temp/*
-!temp/.gitkeep
-!temp/points_for_overview.json
+# Per-run output, at the paths of path_config.json. install.bat makes the three folders
+# next to DecisionEngine/; docs/examples/points_for_overview.json shows the format of
+# the overview points find_overview_positions.czmac writes into temp/.
+/image_for_analysis/
+/results/
+/temp/
 
 # Written by result_processing/results_analyzer.py
 founded_points/

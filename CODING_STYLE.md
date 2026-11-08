@@ -141,12 +141,12 @@ Inside long methods, numbered step markers:
 
 ---
 
-## 3. `data_processing/`, `IO/`, `utils.py` — CPython dialect
+## 3. `DecisionEngine/` — CPython dialect
 
 ### Imports
 
-Absolute, rooted at the project root. `execute_python.py` sets `PYTHONPATH` to the
-project root, so this works both under the runner and when running a module by hand.
+Absolute, rooted at `DecisionEngine/`. `execute_python.py` sets `PYTHONPATH` to that folder
+(`python_project_root`), so this works both under the runner and when running a module by hand from it.
 
 ```python
 import numpy as np

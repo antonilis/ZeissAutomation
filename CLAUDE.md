@@ -6,13 +6,15 @@ acquires again. Targets GUVs, fluorescent hexagonal meshes and FCS point measure
 
 ## The two-runtime rule — read this before touching anything
 
-This repository holds **two programs in two different Python interpreters**. They never
-import each other. They communicate only through the filesystem and one subprocess call.
+This repository holds **two programs in two different Python interpreters**, one folder each:
+`ZeissAPI/` drives the microscope and `DecisionEngine/` looks at what it acquired and decides what
+to measure next. They never import each other. They communicate only through the filesystem and
+one subprocess call.
 
-| | World A — ZEN | World B — analysis |
+| | World A — ZEN | World B — DecisionEngine |
 |---|---|---|
 | Interpreter | IronPython 2.7 (.NET), inside ZEN | CPython 3 in a venv |
-| Code | `ZeissAPI/` | `data_processing/`, `IO/`, `utils.py`, `result_processing/` |
+| Code | `ZeissAPI/` | `DecisionEngine/`: `data_processing/`, `IO/`, `utils.py`, `result_processing/` |
 | Marker | `from System.IO import ...`, `Zen.*` | numpy, torch, f-strings, pathlib |
 | Entry point | `main_macro.czmac` (run from ZEN's macro editor) | `main_processor.py` (run via CLI) |
 
@@ -99,7 +101,8 @@ If you need a new path, add a key to `path_config.example.json` (and to the loca
 ## Layout
 
 - `ZeissAPI/main_macro.czmac` — the acquisition pipeline + its ZEN GUI. The main program.
-- `ZeissAPI/find_overview_positions.czmac` — run once beforehand, writes `temp/points_for_overview.json`.
+- `ZeissAPI/find_overview_positions.czmac` — run once beforehand, writes `temp/points_for_overview.json`
+  (format: `docs/examples/points_for_overview.json`).
   In manual mode the wells are named by a selection like `A1-C4` or `A1-H1, A4-H4, E5`, parsed by
   `parse_well_list`: comma-separated items, each a single well or a rectangle between two corners.
   A bare `A1-C4` is exactly what the old `start`/`end` fields meant. Every well is placed relative
@@ -132,13 +135,13 @@ If you need a new path, add a key to `path_config.example.json` (and to the loca
 - `ZeissAPI/config/` — machine paths and surface offsets (`path_config.json`, git-ignored; template
   `path_config.example.json`), named analysis presets (`processing_config.json`), named object selection
   presets (`selection_config.json`) and the settings of the adaptive experiments (`adaptive_config.json`).
-- `data_processing/main_processor.py` — World B entry point.
-- `data_processing/image_analysis/` — pluggable analysers, auto-registered (see below).
-- `data_processing/object_selection/` — pluggable second stage that rejects found objects,
+- `DecisionEngine/data_processing/main_processor.py` — World B entry point.
+- `DecisionEngine/data_processing/image_analysis/` — pluggable analysers, auto-registered (see below).
+- `DecisionEngine/data_processing/object_selection/` — pluggable second stage that rejects found objects,
   same registry pattern.
-- `data_processing/image_analysis/pixel_stage_converter.py` — pixels → stage micrometres.
-- `IO/` — `.czi` reader (pylibCZIrw + XML metadata) and ConfoCor3 `.raw` reader.
-- `result_processing/` — offline post-hoc analysis. Currently broken, see below.
+- `DecisionEngine/data_processing/image_analysis/pixel_stage_converter.py` — pixels → stage micrometres.
+- `DecisionEngine/IO/` — `.czi` reader (pylibCZIrw + XML metadata) and ConfoCor3 `.raw` reader.
+- `DecisionEngine/result_processing/` — offline post-hoc analysis. Currently broken, see below.
 - `download.bat`, `install.bat`, `installer/` — the installer, see `INSTALL.md`. A third program next to
   the two worlds: plain CPython, run in the portable Python it puts into `env\` (git-ignored),
   importing nothing from the project. `download.bat` (online) fills `env\` with Python, wheels and
@@ -148,7 +151,7 @@ If you need a new path, add a key to `path_config.example.json` (and to the loca
 
 ## Adding an image-analysis algorithm
 
-1. New file in `data_processing/image_analysis/`.
+1. New file in `DecisionEngine/data_processing/image_analysis/`.
 2. Subclass `ImageAnalysisTemplate`, decorate with `@register_class`.
 3. Implement `get_measurement_points()` returning `(pixel_points, stage_points)` —
    two lists of dicts, each with a `"position"` and an `"id"` from `self.new_object_id()`.
@@ -168,7 +171,7 @@ before the file is even opened.
 Positions are `[x, y]` where `x` is a **column**, while numpy is indexed `[row, column]`.
 Getting this backwards measures a different part of the image and reports no error.
 
-`data_processing/image_analysis/__init__.py` imports the package tree automatically,
+`DecisionEngine/data_processing/image_analysis/__init__.py` imports the package tree automatically,
 so registration happens on import — nothing to add to a list.
 
 ## Adding an adaptive experiment
@@ -257,7 +260,7 @@ never functions**.
 The second stage. It runs after an analyser has found the objects and decides which of
 them are worth driving to. It is deliberately symmetric to the first stage:
 
-1. New file in `data_processing/object_selection/`.
+1. New file in `DecisionEngine/data_processing/object_selection/`.
 2. Subclass `ObjectSelectionTemplate`, decorate with `@register_class` (the one from
    `object_selection.selection_registry`, not the analysis one).
 3. Implement `get_kept_ids()` — no arguments — returning the ids of the objects to keep.
@@ -319,7 +322,7 @@ names in `execute_python.py`.
 
 ## Known-broken, do not trust
 
-- `result_processing/results_analyzer.py` imports a package that does not exist
+- `DecisionEngine/result_processing/results_analyzer.py` imports a package that does not exist
   (`data_processing.preprocessors...`) and requests an analyser name that is not
   registered (`FluorescentGUV`). It cannot run. Do not use it as a reference for how
   the rest of the code works.
@@ -340,7 +343,7 @@ Follow `CODING_STYLE.md`. The short version:
   Log with `from runtime_config import log`, never `print`, and never define a second
   `log()`.
 - World B: `print()` for progress (the runner captures it), absolute imports from the
-  project root, reST docstrings (`:param x:` / `:return:`), no type hints.
+  root of `DecisionEngine/`, reST docstrings (`:param x:` / `:return:`), no type hints.
 - Match the surrounding blank-line rhythm; this code separates logical steps inside
   functions with blank lines and uses `####`/`====` banner comments between sections.
 - `if __name__ == '__main__':` blocks are hand-run smoke tests with hardcoded paths.
@@ -351,18 +354,20 @@ Follow `CODING_STYLE.md`. The short version:
 
 ## Running
 
-World B, standalone, from the project root (needs no `path_config.json`):
+World B, standalone, from `DecisionEngine/`, its root, the folder ZEN starts it in and puts on
+`PYTHONPATH` (`python_project_root`); it needs no `path_config.json`:
 
 ```
+cd DecisionEngine
 python data_processing/main_processor.py --type=overview --file_path=<abs .czi> \
        --saving_path=<abs .json> --analysis_arguments=FLGUV --is_FCS=False \
-       --processing_config=ZeissAPI/config/processing_config.json
+       --processing_config=../ZeissAPI/config/processing_config.json
 ```
 
 With an object selection, two more flags:
 
 ```
-       --selection_config=ZeissAPI/config/selection_config.json \
+       --selection_config=../ZeissAPI/config/selection_config.json \
        --selection_arguments=green_membrane
 ```
 
@@ -388,10 +393,11 @@ The venv above matches the lock exactly (checked on 2026-11-08); `uv sync --extr
 makes the same one in `.venv/` of the repo. Notebooks use the Jupyter kernel `zeiss-py310`, which the
 venv above provides.
 
-Tests on this machine, from the project root (see Tests below):
+Tests on this machine, from the repository root (see Tests below; the paths they import from are set
+in `pyproject.toml`):
 
 ```
-PYTHONPATH=tests/support:. /media/dysk/MPI/Project/.venv/bin/python -m pytest tests -q
+/media/dysk/MPI/Project/.venv/bin/python -m pytest -q
 ```
 
 ## Tests

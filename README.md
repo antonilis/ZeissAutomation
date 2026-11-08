@@ -57,8 +57,10 @@ The framework is organized around a set of core components:
 - **`ZeissAPI`**  
   Utilizes Zen Blue API (.czmac macro) for microscope control, **GUI integration**, and Python subprocess handling
 
-- **`data_processing`**  
-  Contains processors for data analysis and producing JSON files with object positions and properties for macros
+- **`DecisionEngine`**  
+  The CPython side: looks at every acquired image, finds and selects the objects and decides where the
+  microscope goes next (`data_processing`, `IO`). It returns JSON files with object positions and
+  properties to the macros
 
 - **Processors**
   - `ZeissImageProcessor` – image analysis

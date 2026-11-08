@@ -3,7 +3,7 @@ import sys
 import subprocess
 
 
-sys.path.insert(0, os.path.abspath('../../'))  # path to the main directory
+sys.path.insert(0, os.path.abspath('../../DecisionEngine/'))  # the root World B imports from
 sys.path.insert(0, os.path.abspath('../../ZeissAPI/'))
 # ------------------------------------------------------
 # Automatically generate .rst files for Python modules
@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath('../../ZeissAPI/'))
 rst_output = os.path.abspath(os.path.dirname(__file__))
 
 # List of module directories to document
-module_dirs = ['../../data_processing', '../../IO']
+module_dirs = ['../../DecisionEngine/data_processing', '../../DecisionEngine/IO']
 
 for mod_dir in module_dirs:
     subprocess.call(['sphinx-apidoc', '-o', rst_output, mod_dir])
