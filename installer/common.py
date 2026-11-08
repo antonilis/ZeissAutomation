@@ -3,8 +3,9 @@ What download.py and install.py share: where the bundle lives, and how path_conf
 
 The installer is a third program next to the two worlds of CLAUDE.md. It runs in the portable
 CPython that download.bat puts into env\\python, on Windows, and never imports anything from
-the project. The functions here are pure so that tests/installer/ can check them on any OS;
-the paths they build are Windows paths (ntpath), whatever the machine running the tests.
+the project. The functions here touch no disk except for reading the template of path_config.json
+from this folder, so that tests/installer/ can check them on any OS; the paths they build are
+Windows paths (ntpath), whatever the machine running the tests.
 """
 import json
 import ntpath
@@ -22,6 +23,10 @@ TORCH_INDEX = {
 
 PATH_CONFIG = "path_config.json"
 PATH_CONFIG_TEMPLATE = "path_config.example.json"
+
+# The template in this folder, the one place the settings of path_config.json that are not paths come from
+TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ZeissAPI", "config",
+                             PATH_CONFIG_TEMPLATE)
 
 
 def env_dir(root):
@@ -54,7 +59,7 @@ def build_path_config(root, zeiss_temp):
     :return: dict with every key of path_config.example.json
     """
     root = root.rstrip("\\")
-    return {
+    paths = {
         "python_exe": ntpath.join(root, ENV_DIR, "python", "python.exe"),
         "python_script": ntpath.join(root, "data_processing", "main_processor.py"),
         "measuring_points_path": _folder(ntpath.join(root, "temp")),
@@ -65,6 +70,11 @@ def build_path_config(root, zeiss_temp):
         "log_path": ntpath.join(root, "zen_log.txt"),
         "last_setup_path": ntpath.join(root, "last_setup.json"),
     }
+
+    # the rest of the template is settings and not paths of this folder, such as surface_offsets, and comes over as it is
+    settings = {key: value for key, value in read_json(TEMPLATE_PATH).items() if key not in paths}
+
+    return dict(settings, **paths)
 
 
 def missing_keys(current, template):
