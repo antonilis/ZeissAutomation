@@ -34,11 +34,11 @@
                   "scan_experiment": "FCS_scan",
                   "laser_line": "MTBLKM980LaserLine639",
                   "focus": "none",
-                  "first_power": 0.02,
-                  "target_khz": 30.0,
-                  "limit_khz": 50.0,
+                  "first_power": 0.05,
+                  "target_khz": 1,
+                  "limit_khz": 10,
                   "tolerance": 0.1,
-                  "min_signal_khz": 0.2,
+                  "min_signal_khz": 0.05,
                   "min_power": 0.005,
-                  "max_power": 0.2,
-                  "z_offsets_um": [-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9]}}
+                  "max_power": 0.1,
+                  "z_offsets_um": [-0.6, -0.3, 0.0, 0.3, 0.6]}}
