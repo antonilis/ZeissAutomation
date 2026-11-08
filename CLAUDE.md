@@ -142,8 +142,9 @@ If you need a new path, add a key to `path_config.example.json` (and to the loca
 - `download.bat`, `install.bat`, `installer/` — the installer, see `INSTALL.md`. A third program next to
   the two worlds: plain CPython, run in the portable Python it puts into `env\` (git-ignored),
   importing nothing from the project. `download.bat` (online) fills `env\` with Python, wheels and
-  the cellpose model; `install.bat` (offline) installs from it, copies `ZeissAPI/` into ZEN's macro
-  folder and writes the machine's `path_config.json` there via `installer/common.py:build_path_config`.
+  the cellpose model; `install.bat` (offline) installs from it, copies what is inside `ZeissAPI/`
+  straight into ZEN's macro folder, next to the other macros there, which it leaves alone, and writes
+  the machine's `config/path_config.json` there via `installer/common.py:build_path_config`.
 
 ## Adding an image-analysis algorithm
 

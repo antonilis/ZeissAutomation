@@ -3,7 +3,8 @@ Run by install.bat on the microscope PC, in the portable Python of env\\python. 
 
 1. installs the packages from env\\wheels (a no-op when they are in already)
 2. puts the cellpose model where cellpose looks for it (%USERPROFILE%\\.cellpose\\models)
-3. copies ZeissAPI into ZEN's macro folder, keeping the path_config.json already there
+3. copies what is inside ZeissAPI straight into ZEN's macro folder, keeping the path_config.json already
+   there and the other macros of that folder
 4. makes path_config.json there, or brings an existing one up to date
 5. checks that the analysis runs: imports, GPU, and main_processor.py on the test image
 
@@ -100,7 +101,7 @@ def install_models():
 
 def zen_macro_folder(settings):
     step("ZEN macro folder")
-    print("ZeissAPI has to sit in the folder ZEN runs its macros from.")
+    print("The files of ZeissAPI go straight into the folder ZEN runs its macros from.")
     while True:
         folder = ask("Path of that folder", settings.get("zen_macro_folder", ""))
         if folder and os.path.isdir(folder):
@@ -110,29 +111,41 @@ def zen_macro_folder(settings):
 
 def copy_zeissapi(source, macro_folder, confirm=ask_yes_no):
     """
-    Replace <macro_folder>\\ZeissAPI with the one from this project. The path_config.json already
-    there belongs to this machine and is kept; nothing else is.
-    :return: str path of the copied ZeissAPI, or None when the user declined
+    Copy what is inside ZeissAPI straight into the macro folder, the layout ZEN imports zen_lib from.
+    Each folder and file of ZeissAPI replaces its namesake there, so a plugin removed from the project
+    disappears from adaptive\\ too. Everything else in the macro folder, the other macros of the
+    microscope, is left alone, and so is the machine's own config\\path_config.json.
+    :return: str the macro folder, or None when the user declined
     """
-    target = os.path.join(macro_folder, "ZeissAPI")
+    entries = [name for name in sorted(os.listdir(source)) if name != "__pycache__"]
+    present = [name for name in entries if os.path.exists(os.path.join(macro_folder, name))]
+
+    if present and not confirm("{} already holds {}. Replace them with the version from this folder? "
+                               "The other macros there stay.".format(macro_folder, ", ".join(present))):
+        return None
+
+    live = os.path.join(macro_folder, "config", PATH_CONFIG)
     kept = None
 
-    if os.path.isdir(target):
-        if not confirm("{} exists. Replace it with the version from this folder?".format(target)):
-            return None
-        live = os.path.join(target, "config", PATH_CONFIG)
-        if os.path.isfile(live):
-            with open(live, "rb") as f:
-                kept = f.read()
-        shutil.rmtree(target)
+    if os.path.isfile(live):
+        with open(live, "rb") as f:
+            kept = f.read()
 
-    shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", PATH_CONFIG))
+    for name in entries:
+        origin, target = os.path.join(source, name), os.path.join(macro_folder, name)
+
+        if os.path.isdir(origin):
+            if os.path.isdir(target):
+                shutil.rmtree(target)
+            shutil.copytree(origin, target, ignore=shutil.ignore_patterns("__pycache__", PATH_CONFIG))
+        else:
+            shutil.copy2(origin, target)
 
     if kept is not None:
-        with open(os.path.join(target, "config", PATH_CONFIG), "wb") as f:
+        with open(live, "wb") as f:
             f.write(kept)
 
-    return target
+    return macro_folder
 
 
 def make_path_config(api_folder, ask_text=ask, confirm=ask_yes_no):
@@ -221,8 +234,8 @@ def main():
     step("ZeissAPI -> {}".format(macro_folder))
     api_folder = copy_zeissapi(SOURCE_API, macro_folder)
     if api_folder is None:
-        api_folder = os.path.join(macro_folder, "ZeissAPI")
-        print("Kept the ZeissAPI that is there.")
+        api_folder = macro_folder
+        print("Kept the files that are there.")
     else:
         print("Copied.")
 
