@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 def load(relative_path, name):
     """
-    :param str relative_path: path from the project root, for example "IO/read_czi_file.py"
+    :param str relative_path: path from the project root, for example "DecisionEngine/IO/read_czi_file.py"
     :param str name: module name to register it under, distinct from the package name
     :return: module
     """

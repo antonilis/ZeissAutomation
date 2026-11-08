@@ -16,7 +16,7 @@ import zen_fakes
 from zen_lib.execute_python import PythonAnalysisRunner
 
 PYTHON_EXE = "D:\\automation\\venv\\Scripts\\python.exe"
-SCRIPT = "D:\\automation\\data_processing\\main_processor.py"
+SCRIPT = "D:\\automation\\DecisionEngine\\data_processing\\main_processor.py"
 PROJECT = "D:\\automation\\"
 PROCESSING = "D:\\automation\\ZeissAPI\\config\\processing_config.json"
 SELECTION = "D:\\automation\\ZeissAPI\\config\\selection_config.json"
@@ -167,7 +167,7 @@ def test_run_argument_order_irrelevant(monkeypatch):
     "python_script with a space (D:\\my automation\\...) reaches python.exe as two arguments "
     "and python tries to run 'D:\\my'."))
 def test_script_path_with_space_survives(monkeypatch):
-    script = "D:\\my automation\\data_processing\\main_processor.py"
+    script = "D:\\my automation\\DecisionEngine\\data_processing\\main_processor.py"
 
     argv, parsed = roundtrip(monkeypatch, runner=make_runner(script), **BASE)
 

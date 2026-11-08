@@ -18,7 +18,7 @@ REQUIRED = {
     "image_for_analysis_path": "D:\\automation\\image_for_analysis\\",
     "zeiss_temp_file": "D:\\zeiss\\Pictures\\",
     "python_exe": "D:\\automation\\venv\\Scripts\\python.exe",
-    "python_script": "D:\\automation\\data_processing\\main_processor.py",
+    "python_script": "D:\\automation\\DecisionEngine\\data_processing\\main_processor.py",
     "python_project_root": "D:\\automation\\",
 }
 OPTIONAL = {

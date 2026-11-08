@@ -17,8 +17,8 @@ from load_module import load  # noqa: E402
 
 pytestmark = pytest.mark.data
 
-reader_module = load("IO/read_czi_file.py", "read_czi_file_full_read")
-psc = load("data_processing/image_analysis/pixel_stage_converter.py", "pixel_stage_converter_full_read")
+reader_module = load("DecisionEngine/IO/read_czi_file.py", "read_czi_file_full_read")
+psc = load("DecisionEngine/data_processing/image_analysis/pixel_stage_converter.py", "pixel_stage_converter_full_read")
 
 ZSTACK = ("data/I_visit/adaptive_zsan_GUV/results/obj_129cb88f-ae68-4848-af9b-0d2229a214ed/"
           "129cb88f-ae68-4848-af9b-0d2229a214ed_GUV_automation_RhB_zStack_image_reanalysis_z.czi")

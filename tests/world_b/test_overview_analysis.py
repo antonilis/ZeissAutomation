@@ -105,15 +105,17 @@ def test_every_point_has_an_id_and_is_selected(processor):
 
 
 def test_main_processor_end_to_end(tmp_path):
-    # The command line PythonAnalysisRunner builds, run as a real process from the project root
+    # The command line PythonAnalysisRunner builds, run as a real process from DecisionEngine/, the
+    # working folder and PYTHONPATH ZEN gives it (python_project_root)
     saving_path = tmp_path / "A1_x_measurements_points.json"
-    env = dict(os.environ, PYTHONPATH=ROOT, MPLBACKEND="Agg")
+    engine = os.path.join(ROOT, "DecisionEngine")
+    env = dict(os.environ, PYTHONPATH=engine, MPLBACKEND="Agg")
 
     result = subprocess.run(
-        [sys.executable, os.path.join(ROOT, "data_processing", "main_processor.py"),
+        [sys.executable, os.path.join(engine, "data_processing", "main_processor.py"),
          "--type=overview", "--file_path={}".format(CZI), "--saving_path={}".format(saving_path),
          "--analysis_arguments=Cellpose", "--is_FCS=False", "--processing_config={}".format(PROCESSING_CONFIG)],
-        cwd=ROOT, env=env, capture_output=True, text=True, timeout=600)
+        cwd=engine, env=env, capture_output=True, text=True, timeout=600)
 
     assert result.returncode == 0, result.stderr[-2000:]
     with open(saving_path) as f:

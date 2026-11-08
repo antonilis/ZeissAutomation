@@ -45,15 +45,19 @@ def test_built_config_is_read_by_runtime_config(zen_disk):
     config = RuntimeConfig(path)
 
     assert config.python_exe == "E:\\zeiss_auto\\env\\python\\python.exe"
-    assert config.python_project_root == "E:\\zeiss_auto\\"
+    # ZEN starts the analysis in DecisionEngine/ and puts it on PYTHONPATH
+    assert config.python_project_root == "E:\\zeiss_auto\\DecisionEngine\\"
+    assert config.python_script == "E:\\zeiss_auto\\DecisionEngine\\data_processing\\main_processor.py"
     assert config.results == "E:\\zeiss_auto\\results\\"
     assert config.zeiss_temp == "E:\\zen_autosave\\"
 
 
 @pytest.mark.parametrize("recorded, moved", [
-    ("D:\\automation\\", False),
-    ("d:\\AUTOMATION", False),
-    ("E:\\automation\\", True),
+    ("D:\\automation\\DecisionEngine\\", False),
+    ("d:\\AUTOMATION\\decisionengine", False),
+    # an install from before DecisionEngine/ has to have its paths brought up to date as well
+    ("D:\\automation\\", True),
+    ("E:\\automation\\DecisionEngine\\", True),
     ("", True),
 ])
 def test_was_moved(recorded, moved):
@@ -108,7 +112,7 @@ def test_make_path_config_follows_a_moved_folder(api, monkeypatch):
     install.make_path_config(str(api), ask_text=no_questions, confirm=lambda q: True)
 
     data = json.loads(live.read_text())
-    assert data["python_project_root"] == "E:\\new\\"
+    assert data["python_project_root"] == "E:\\new\\DecisionEngine\\"
     assert data["zeiss_temp_file"] == "D:\\zen_saves\\"
 
 
@@ -119,7 +123,7 @@ def test_make_path_config_leaves_paths_when_declined(api, monkeypatch):
 
     install.make_path_config(str(api), ask_text=no_questions, confirm=lambda q: False)
 
-    assert json.loads(live.read_text())["python_project_root"] == "D:\\old\\"
+    assert json.loads(live.read_text())["python_project_root"] == "D:\\old\\DecisionEngine\\"
 
 
 def test_make_path_config_adds_a_missing_key(api, monkeypatch):

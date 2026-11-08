@@ -12,7 +12,7 @@ import pytest
 
 from load_module import load
 
-psc = load("data_processing/image_analysis/pixel_stage_converter.py", "pixel_stage_converter_under_test")
+psc = load("DecisionEngine/data_processing/image_analysis/pixel_stage_converter.py", "pixel_stage_converter_under_test")
 PixelStageConverter = psc.PixelStageConverter
 
 

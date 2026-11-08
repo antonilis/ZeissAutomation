@@ -10,8 +10,8 @@ pytest.importorskip("pylibCZIrw")  # read_czi_file imports it at the top
 
 from load_module import load  # noqa: E402
 
-reader_module = load("IO/read_czi_file.py", "read_czi_file_under_test")
-psc = load("data_processing/image_analysis/pixel_stage_converter.py", "pixel_stage_converter_for_czi")
+reader_module = load("DecisionEngine/IO/read_czi_file.py", "read_czi_file_under_test")
+psc = load("DecisionEngine/data_processing/image_analysis/pixel_stage_converter.py", "pixel_stage_converter_for_czi")
 
 CZI = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fixtures", "guv_overview.czi")
 

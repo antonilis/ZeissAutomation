@@ -4,7 +4,7 @@ The two-runtime rule of CLAUDE.md, checked on the source:
 - World A (ZeissAPI/, .py files and the Python inside every .czmac) runs in IronPython 2.7:
   no f-strings, no CPython-only packages, no Python-3-only syntax, and no multi-argument
   print() without the __future__ import, which 2.7 would print as a tuple.
-- World B (data_processing/, IO/, utils.py, result_processing/) never imports System, clr or
+- World B (DecisionEngine/: data_processing/, IO/, utils.py, result_processing/) never imports System, clr or
   the ZEN API.
 
 The source is parsed with CPython 3's ast, so World A code must also be valid Python 3
@@ -36,7 +36,7 @@ def _files(*patterns):
 
 
 WORLD_A = _files("ZeissAPI/**/*.py", "ZeissAPI/**/*.czmac")
-WORLD_B = _files("data_processing/**/*.py", "IO/**/*.py", "utils.py", "result_processing/**/*.py")
+WORLD_B = _files("DecisionEngine/**/*.py")
 
 
 def _id(path):
