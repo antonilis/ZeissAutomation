@@ -97,7 +97,7 @@ class PathManager:
         self.results = config.results
 ```
 
-New path? Add a key to `path_config.json` and an attribute to `RuntimeConfig`. Never
+New path? Add a key to `path_config.example.json` (the template; the live `path_config.json` is git-ignored) and an attribute to `RuntimeConfig`. Never
 `open()` a config file a second time, never write an absolute `D:\...` literal, and never
 resolve a fallback path when the caller was supposed to supply one — fail loudly instead.
 
@@ -327,6 +327,6 @@ named preset, not into a function default. Presets are flat and small:
            "min_size_um": 2.5, "max_size_um": 60}}
 ```
 
-Machine-specific absolute paths belong in `path_config.json` and nowhere else. If you
+Machine-specific absolute paths belong in `path_config.json` (template: `path_config.example.json`) and nowhere else. If you
 find a hardcoded `D:\...` outside that file, it is a bug worth reporting rather than
 copying.

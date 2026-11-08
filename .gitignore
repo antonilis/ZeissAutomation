@@ -67,3 +67,9 @@ desktop.ini
 
 # ---- Claude Code ----
 .claude/settings.local.json
+
+# ---- Local configuration ----
+# The machine paths differ per microscope PC, so each one keeps its own copy, made
+# from path_config.example.json next to it (by hand or by install.bat). The presets
+# (processing_config.json, selection_config.json) are shared and stay tracked.
+ZeissAPI/config/path_config.json
