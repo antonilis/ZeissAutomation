@@ -58,7 +58,7 @@ def main():
 
     os.makedirs(WHEELS, exist_ok=True)
 
-    # 1. the wheels, for this Python (3.12, Windows) exactly, as nothing gets built on the target
+    # 1. the wheels, for this Python (3.10.11, Windows) exactly, as nothing gets built on the target
     pip("download", "-r", REQUIREMENTS, "--extra-index-url", TORCH_INDEX[variant],
         "--only-binary=:all:", "--dest", WHEELS)
 

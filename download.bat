@@ -14,9 +14,10 @@ rem    download.bat --cpu    torch for the CPU only, about 200 MB
 rem ==========================================================================
 cd /d "%~dp0"
 
-rem Portable CPython from python-build-standalone. Change both lines together.
-set "PY_URL=https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16%%2B20261026-x86_64-pc-windows-msvc-install_only.tar.gz"
-set "PY_SHA256=590dfcbe3a34c07301e6332e13e2188b98655cd072b08afa45a7998dc4c22bc5"
+rem Portable CPython 3.10.11 from python-build-standalone, the version the analysis runs on (README).
+rem The shared build, as the static one cannot load compiled extensions. Change both lines together.
+set "PY_URL=https://github.com/indygreg/python-build-standalone/releases/download/20230507/cpython-3.10.11%%2B20230507-x86_64-pc-windows-msvc-shared-install_only.tar.gz"
+set "PY_SHA256=9c2d3604a06fcd422289df73015cd00e7271d90de28d2c910f0e2309a7f73a68"
 
 set "ENV=%~dp0env"
 set "PY=%ENV%\python\python.exe"
@@ -27,7 +28,7 @@ where tar.exe >nul 2>&1 || (echo ERROR: tar.exe not found, Windows 10 version 18
 if exist "%PY%" goto :have_python
 
 if not exist "%ENV%" mkdir "%ENV%"
-echo Downloading Python 3.12 ...
+echo Downloading Python 3.10.11 ...
 curl.exe -L --fail -o "%ENV%\python.tar.gz" "%PY_URL%" || goto :fail
 certutil -hashfile "%ENV%\python.tar.gz" SHA256 | findstr /i /c:"%PY_SHA256%" >nul || (echo ERROR: the Python download is damaged, checksum mismatch. & goto :fail)
 tar -xzf "%ENV%\python.tar.gz" -C "%ENV%" || goto :fail
