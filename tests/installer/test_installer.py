@@ -155,34 +155,39 @@ def test_copy_into_an_empty_macro_folder(source, tmp_path):
 
     target = install.copy_zeissapi(str(source), str(macros), confirm=no_questions)
 
-    assert (macros / "ZeissAPI" / "main_macro.czmac").read_text() == "new macro"
+    # straight into the macro folder, where ZEN imports zen_lib from, and no ZeissAPI subfolder
+    assert (macros / "main_macro.czmac").read_text() == "new macro"
+    assert not (macros / "ZeissAPI").exists()
     # never ship one machine's paths to another
-    assert not (macros / "ZeissAPI" / "config" / "path_config.json").exists()
-    assert not (macros / "ZeissAPI" / "zen_lib" / "__pycache__").exists()
-    assert target == str(macros / "ZeissAPI")
+    assert not (macros / "config" / "path_config.json").exists()
+    assert not (macros / "zen_lib" / "__pycache__").exists()
+    assert target == str(macros)
 
 
-def test_copy_replaces_everything_but_the_machine_path_config(source, tmp_path):
-    old = tmp_path / "zen_macros" / "ZeissAPI"
-    (old / "config").mkdir(parents=True)
-    (old / "main_macro.czmac").write_text("old macro")
-    (old / "removed_since.py").write_text("stale")
-    (old / "config" / "path_config.json").write_text("this machine's paths")
+def test_copy_replaces_ours_and_keeps_the_rest(source, tmp_path):
+    macros = tmp_path / "zen_macros"
+    (macros / "config").mkdir(parents=True)
+    (macros / "zen_lib").mkdir()
+    (macros / "main_macro.czmac").write_text("old macro")
+    (macros / "zen_lib" / "removed_since.py").write_text("stale")
+    (macros / "config" / "path_config.json").write_text("this machine's paths")
+    (macros / "D_correction.czmac").write_text("another macro of the microscope")
 
-    install.copy_zeissapi(str(source), str(old.parent), confirm=lambda q: True)
+    install.copy_zeissapi(str(source), str(macros), confirm=lambda q: True)
 
-    assert (old / "main_macro.czmac").read_text() == "new macro"
-    assert not (old / "removed_since.py").exists()
-    assert (old / "config" / "path_config.json").read_text() == "this machine's paths"
+    assert (macros / "main_macro.czmac").read_text() == "new macro"
+    assert not (macros / "zen_lib" / "removed_since.py").exists()
+    assert (macros / "config" / "path_config.json").read_text() == "this machine's paths"
+    assert (macros / "D_correction.czmac").read_text() == "another macro of the microscope"
 
 
 def test_copy_declined_leaves_everything(source, tmp_path):
-    old = tmp_path / "zen_macros" / "ZeissAPI"
-    old.mkdir(parents=True)
-    (old / "main_macro.czmac").write_text("old macro")
+    macros = tmp_path / "zen_macros"
+    macros.mkdir()
+    (macros / "main_macro.czmac").write_text("old macro")
 
-    assert install.copy_zeissapi(str(source), str(old.parent), confirm=lambda q: False) is None
-    assert (old / "main_macro.czmac").read_text() == "old macro"
+    assert install.copy_zeissapi(str(source), str(macros), confirm=lambda q: False) is None
+    assert (macros / "main_macro.czmac").read_text() == "old macro"
 
 
 ###################### install.py: refusing what cannot work ##########################################
