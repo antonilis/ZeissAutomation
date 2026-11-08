@@ -24,6 +24,8 @@ ENV/
 # Raw acquisitions are large and are reproducible only by re-running the
 # microscope. They never belong in version control, wherever they end up.
 *.czi
+# ...except the one small, scrubbed test image the tests read (see tests/fixtures/README.md)
+!tests/fixtures/*.czi
 *.raw
 *.fcs
 *.lsm

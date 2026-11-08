@@ -139,6 +139,11 @@ If you need a new path, add a key to `path_config.example.json` (and to the loca
 - `data_processing/image_analysis/pixel_stage_converter.py` — pixels → stage micrometres.
 - `IO/` — `.czi` reader (pylibCZIrw + XML metadata) and ConfoCor3 `.raw` reader.
 - `result_processing/` — offline post-hoc analysis. Currently broken, see below.
+- `download.bat`, `install.bat`, `installer/` — the installer, see `INSTALL.md`. A third program next to
+  the two worlds: plain CPython, run in the portable Python it puts into `env\` (git-ignored),
+  importing nothing from the project. `download.bat` (online) fills `env\` with Python, wheels and
+  the cellpose model; `install.bat` (offline) installs from it, copies `ZeissAPI/` into ZEN's macro
+  folder and writes the machine's `path_config.json` there via `installer/common.py:build_path_config`.
 
 ## Adding an image-analysis algorithm
 
@@ -318,12 +323,13 @@ names in `execute_python.py`.
   registered (`FluorescentGUV`). It cannot run. Do not use it as a reference for how
   the rest of the code works.
 - `FluorescentGUV` is also the stale default of `ZeissImageProcessor.__init__`.
-- `requirements.txt` is encoded as UTF-16, and `ZeissAPI/zen_lib/path_manager_main_macro.py`
-  starts with a UTF-8 BOM. Both are harmless at runtime but confuse tooling.
-- `PixelStageConverter.convert_xy` scales `px[0]` (a column index, so X) by `H` and
-  `px[1]` by `W`. If that is the X/Y swap it looks like, it is invisible on square
-  images and a systematic offset on rectangular ones. Not investigated yet; do not
-  change it without a test image, because it moves the stage.
+- `ZeissAPI/zen_lib/path_manager_main_macro.py` starts with a UTF-8 BOM. Harmless at runtime but
+  confuses tooling.
+- `PixelStageConverter.convert_xy` centres `px[0]` (a column index, so X) on `H/2` and
+  `px[1]` on `W/2`. Invisible on square images, an offset of `(W - H) / 2` px on others;
+  every image the pipeline has taken so far is square. Pinned down by
+  `test_rectangular_image_x_uses_width` (xfail) next to the frozen current behaviour; it
+  moves the stage, so fix it only when asked.
 
 ## Style
 
@@ -375,4 +381,39 @@ It is built from `requirements.txt` with two changes on this machine: `torch==2.
 the CUDA build, and `opencv-python-headless` only, because `opencv-python` overwrites the same files.
 Notebooks use the Jupyter kernel `zeiss-py310`, which this venv provides.
 
-<!-- TODO: fill in the test command for this machine. -->
+Tests on this machine, from the project root (see Tests below):
+
+```
+PYTHONPATH=tests/support:. /media/dysk/MPI/Project/.venv/bin/python -m pytest tests -q
+```
+
+## Tests
+
+```
+python3 -m venv .venv
+.venv/bin/pip install torch==2.8.0+cpu --index-url https://download.pytorch.org/whl/cpu
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pytest                                    # everything that needs no data
+ZEISS_TEST_DATA=/media/dysk/MPI .venv/bin/python -m pytest    # also the .czi files outside the repo
+```
+
+Without cellpose, torch and skimage the analysis tests are skipped, not failed. Cellpose downloads
+its model on the first run.
+
+`tests/world_a/` runs ZeissAPI/zen_lib in CPython against fakes of `System.*`, `clr` and `Zeiss.*`
+(`tests/support/zen_fakes.py`); `tests/contract/` checks the command line between the worlds and
+the two-runtime rule; `tests/world_b/` the analysis side on one real, scrubbed overview image,
+`tests/fixtures/guv_overview.czi` (metadata, pixels, the Cellpose preset, `main_processor.py` end to
+end; see `tests/fixtures/README.md`). Tests marked `data` read acquisitions that are not in the
+repository and run only with `ZEISS_TEST_DATA`. What only ZEN can show — real .NET paths, the real
+interpreter — is for the autotest inside ZEN.
+
+Rules:
+
+- Run `pytest` before every commit that changes code.
+- Changing an existing test — an assertion, an expected value, removing a test, adding an
+  `xfail` — is a commit of its own, with the reason in the commit message. Never in the same
+  commit as a change to production code.
+- A known bug is an `xfail(strict=True)` whose `reason` names the file, the line and the bug, often
+  next to a test freezing the current behaviour. When the xfail starts passing (strict turns that
+  into a failure), remove the xfail marker and the frozen counterpart, in a commit of their own.
